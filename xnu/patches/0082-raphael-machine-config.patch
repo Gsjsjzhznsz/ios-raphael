@@ -1,3 +1,16 @@
+diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
+index f2d8bf8..a883fc3 100644
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -45,7 +45,7 @@ CFLAGS+= -include meta_features.h -DDRIVER_PRIVATE \
+ SFLAGS+= -include meta_features.h
+ 
+ # This provider is built into SWEET; other boards use their normal kext.
+-ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)
++ifneq (,$(filter SWEET RAPHAEL,$(CURRENT_MACHINE_CONFIG)))
+ SWEET_PTHREAD_ROOT = $(SRCROOT)/bsd/pthread/sweet_libpthread
+ SWEET_PTHREAD_INC = -I$(SWEET_PTHREAD_ROOT) -I$(SWEET_PTHREAD_ROOT)/private -I$(SWEET_PTHREAD_ROOT)/include
+ sweet_pthread_init.o_INCFLAGS = $(SWEET_PTHREAD_INC)
 diff --git a/config/MASTER.arm64.raphael b/config/MASTER.arm64.raphael
 new file mode 100644
 index 0000000..0d93890
