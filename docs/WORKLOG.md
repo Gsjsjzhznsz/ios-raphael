@@ -168,3 +168,23 @@ Work Log:
 Stage Summary:
 - 三条零依赖证据链（秒表解码/devmem DDR 记录/闪存面包屑+故障码）+ USB 判别法就绪
 - 等用户回传：crumb.bin（wc=4096）、diag4 掐表结果、devmem 四值、fastboot devices 判别输出
+
+---
+Task ID: 9
+Agent: Super Z (main agent)
+Task: 第三轮真机结果解读（diag4-v2 点亮屏幕）+ diag5 XNU 直通镜像交付
+
+Work Log:
+- 屏幕输出逐行核对 shim.c/loader.c 源码：SHIM milestone 4 → INITRD/PHYS/VIRT/ENTRY/SEGS/BOOTARG/JUMP 全部来自 loader.c，"RESET now" 是 reset() 的计划内打印（con_str("RESET","now")，shim.c:120）
+- 结论：diag4 的 shimstage=1 在跳转前故意拦停（loader.c:162 stage_diag_final()，20+20×6=140 秒后打印 RESET now 并 PSCI 复位）——XNU 从未运行，本轮零崩溃，shim 6 阶段全绿
+- v1 死寂/v2 点亮的差异 = boot 头格式：v1 为 header v1（DTB 拼接 kernel），v2 为 header v2 + 独立 DTB section；raphael 小米 ABL 只接受 v2 格式（之前多轮 header-v1 镜像很可能从未执行）
+- payload-raphael-diag4.bin 头部实解：phys_base=0x100000000、mem_size=0xFCC00000、virt_base=0xFFFFFE0006000000、entry_pa=0x10148B488——屏幕上 "PHYS base=00000000" 是 con_hex2 的 uint32 截断显示，非真值
+- 屏幕点亮证明 ABL 显示管线在 fastboot boot 后持续自刷新，写 splash framebuffer 即可上屏（更正第二轮"结构性黑屏"判断）；fb 0x9c000000 与 RAM 0x100000000 在 16K granule 下同属 V=P L1 index 0 的 64GB 窗口，0010 的 fb bootstrap 映射（L2 idx 78 < RAM idx 128）在 raphael 上无冲突
+- XNU 侧诊断资产核查（fecc50a 已含）：start.s stage-0 白条（MMU off 直画）+ sweet_early.c 早期文本控制台 + sweet_early_mark(1..8)（arm_init 七个埋点 + TTBR0 切换）+ sweet_early_panic；0084 已适配 2340 高度
+- diag5 打包（scripts/package-raphael-diag5.sh）：同一 shim/内核/ADT，cmdline 去掉 shimstage=1，header v2；cmp 校验 = 与 diag4-v2 仅差 12 字节 shimstage 区 + 20 字节 build id
+- 交付 shim-boot-raphael-diag5.img + payload-raphael-diag5.bin + docs/TEST-NO-PC-DIAG5.txt（含白条/SWEET EARLY 1-8 结果对照表、6GB 机型预警、掐表要求）
+
+Stage Summary:
+- shim 链路真机验证完毕；下一轮 XNU 首跳，XNU 内置三段早期诊断开箱即用，无需新内核构建
+- 关键认知：屏幕 = 第一诊断通道；v2 头 = 唯一被 ABL 接受的格式；18d1/Android = ABL fastboot gadget 残留
+- 等 diag5 回传：白条是否出现、SWEET EARLY 走到第几行、定格画面全景、掐表时间线
