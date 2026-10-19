@@ -92,3 +92,24 @@ Work Log:
 Stage Summary:
 - 含 0085-0087 的首测镜像就绪：真机 fastboot boot 即可验证音量上键/触摸二供/USB 直播日志三条新链路
 - 验证顺序建议：sweetusb=1 看时钟/GDSC 报告 → sweetusb=2 + sweet-usbnet.sh 直播日志 → cpus=1→8 → rootfs
+
+---
+Task ID: 5
+Agent: Super Z (main agent)
+Task: README 双语化（默认中文）+ 仓库全面清除 Note 10（sweet/SM7150）内容，仓库定位改为纯 raphael/855
+
+Work Log:
+- README.md 全文重写：双语结构（中文默认在上、English 完整镜像在下），内容 100% raphael（K20 Pro / SM8150 / 骁龙 855）
+  - 新增：当前状态表（8 子系统）、启动链、三条日志通道说明、真机测试指南（备份/rootfs/CI 内核/打包/fastboot boot/boot-args 速查）、raphael 补丁表 0082-0087、SM8150 硬件事实、K20 Pro 刷机生态资源清单（mainline DTS / howtocuddle 6.18 / pmOS / ZakoClubROM 内核源码 / LineageOS / XDA）、仓库布局、Credits（上游 dipa-studio/ios-sweet 框架署名）
+- 删除旧 NOTES.md（433 行，上游 Note 10 工程日志，169 处 sweet 引用）→ git rm
+- NOTES-RAPHAEL.md → git mv 为 NOTES.md 并重写净化：删除全部 "identical/mirrors/like sweet" 对照叙述与 sweet(SM7150) 对照列，改为 raphael 单列 + "generic value, no change / generic constant was X" 表述；外部来源列表去掉 sm7150.dtsi/gcc-sm7150.c
+- 删除 README-RAPHAEL.md（内容已并入新 README）
+- AGENTS.md 重写：指向新文档结构 + "每步完成即 commit+push worklog" 规则（用户要求）
+- 交叉引用修正：tools/mkadt.py docstring（SWEET xnu→XNU kernel、sweet live FDT→target device's live FDT、NOTES-RAPHAEL→NOTES）、raphael.yml 注释（README-RAPHAEL→README）
+- .gitignore 增加 shim-boot*.img（首测镜像不入库）
+- 清除验证：grep note10/SM7150/732G 于 README/NOTES/AGENTS = 0 命中；剩余 sweet 均为代码字面量（fork 仓库名、工具/产物文件名、boot-arg、'xiaomi,sweet' 兼容串、SweetHID 组件名）
+- 文档保留范围声明：0001-0081 补丁与工具文件名为上游框架遗产，属代码标识符而非 Note 10 内容，未重命名（避免破坏 CI 补丁序与内核构建）
+
+Stage Summary:
+- 仓库文档层已完全定位为 raphael/855 项目；README 双语、中文默认
+- 待办不变：真机 fastboot boot 冒烟测试（cpus=1 起步）

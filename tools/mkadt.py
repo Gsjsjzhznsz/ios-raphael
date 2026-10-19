@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
+"""Build the minimal Apple Device Tree that the XNU kernel needs to boot.
 
-Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--raphael]
+Only what the early boot path actually reads (see NOTES.md); MMIO addresses
+come from the target device's live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--raphael]
 
---raphael: Xiaomi Redmi K20 Pro (SM8150 / Snapdragon 855). The platform is
-the same Qualcomm generation as sweet (Kryo 400 series, ARMv8.2 without PAC,
-GICv3 with security extensions, GENI/QUP, RPMh, SPMI, DWC3, UFS 2.1), so the
-ADT differs only in numbers:
-  - native panel 1080x2340 (K20 Pro AMOLED) instead of 1080x2400; the
-    presented canvas stays 1125x2436 (iPhone X)
-  - ABL cont_splash framebuffer: same base 0x9c000000, size 0x2400000
+--raphael: Xiaomi Redmi K20 Pro (SM8150 / Snapdragon 855). Same Qualcomm
+platform family as the generic driver set (Kryo 400 series CPUs, ARMv8.2
+without PAC, GICv3 with security extensions, GENI/QUP, RPMh, SPMI, DWC3,
+UFS 2.1), so the ADT differs only in numbers:
+  - native panel 1080x2340 (K20 Pro AMOLED); the presented canvas stays
+    1125x2436 (iPhone X)
+  - ABL cont_splash framebuffer: base 0x9c000000, size 0x2400000
     (sm8150.dtsi reserved-memory cont_splash_region), height 2340
   - CPU clocks: cpu0 Kryo 485 Prime 2.8416 GHz, cpu1-3 Gold 2.4192 GHz,
-    cpu4-7 Silver 1.8048 GHz; MPIDR Aff1 = core, same layout as sweet
+    cpu4-7 Silver 1.8048 GHz; MPIDR Aff1 = core
 Everything else (GICD/GICR, UFS 1d84000, 19.2 MHz timebase, vtimer INTID 19,
-compatible strings incl. 'xiaomi,sweet' for the SWEET platform expert) is
-identical to sweet; see NOTES-RAPHAEL.md for the extracted hardware facts.
+compatible strings incl. 'xiaomi,sweet' for the platform expert) matches the
+generic driver values; see NOTES.md for the extracted hardware facts.
 """
 import hashlib, os, struct, sys
 
@@ -142,7 +142,7 @@ def build(seed=None, qemu=False, highmem=False, raphael=False):
     # SWEET SMP: all eight cores in physical-core order (0-5 Cortex-A55,
     # 6-7 Cortex-A76), one homogeneous cluster. The kernel defaults to one
     # and uses cpus=N to select an initial prefix (N <= 8).
-    # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
+    # QEMU retains its original single-CPU tree: its MPIDRs differ from the phone trees.
     cpu_nodes = []
     for core in range(1 if qemu else 8):
         # SM8150 (raphael): cpu0 = Kryo 485 Prime 2.8416 GHz, cpu1-3 Gold

@@ -8,3 +8,6 @@ shim/out/
 xnu/out/
 xnu/out-*/
 __pycache__/
+
+# packaged first-boot images stay out of git
+shim-boot*.img

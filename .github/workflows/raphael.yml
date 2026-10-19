@@ -19,7 +19,7 @@ jobs:
       - name: Build shim (RAPHAEL)
         run: |
           # Empty ramdisk: diagnostics-only image; the real payload comes from
-          # tools/mkpayload.py (see README-RAPHAEL.md). RAPHAEL=1 selects the
+          # tools/mkpayload.py (see README.md). RAPHAEL=1 selects the
           # 1080x2340 console and the SM8150 imem restart-reason address.
           (cd shim && RAPHAEL=1 ./build.sh)
           mkdir -p shim-raphael
