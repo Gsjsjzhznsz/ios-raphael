@@ -1,0 +1,158 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 84a50af..032029a 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -65,6 +65,7 @@ void sweet_touch_init(void);
+ #define TOUCH_GOODIX     1
+ #define TOUCH_FTS        2
+ #define TOUCH_GOODIX9889 3
++#define TOUCH_STFTS      4
+ /* GT9896 is Yellowstone in Xiaomi sweet-r-oss, not the Berlin protocol. */
+ /* RAPHAEL GT9889 (GTX8 0x824E generation, from goodix_driver_gt9886 in
+  * Xiaomi raphael-r-oss): version at 0x8240; event frame at 0x824E with a
+@@ -79,6 +80,18 @@ void sweet_touch_init(void);
+ #define GOODIX_HEAD_LEN  8u
+ #define GOODIX_POINT_LEN 8u
+ 
++/* ST FTS (FingerTipS), carried as fts_521 in the raphael kernel source:
++ * I2C 0x49; hw-register reads are 0xFA + 4 big-endian address bytes
++ * (fts_lib/ftsIO.c fts_writeReadU8UX); chip id at 0x20000000; event FIFO
++ * read = write 0x86, then 8-byte events where b[7]&0x1f counts the rest
++ * (fts.c fts_event_handler); per event b[0]>>4: 1 enter / 2 motion /
++ * 3 leave, id = b[1]>>4, type = b[1]&0xf (1 = finger),
++ * x = ((b[3]&0xf)<<8)|b[2], y = (b[4]<<4)|(b[3]>>4). Read-only bring-up:
++ * no panel-init writes, so sensing must be inherited from the previous OS. */
++#define STFTS_ADDR       0x49u
++#define STFTS_FIFO_CMD   0x86u
++#define STFTS_EVT_LEN    8u
++
+ #define SE_STATUS       0x040u
+ #define SE_MCLK         0x048u
+ #define SE_FW           0x068u
+@@ -585,6 +598,60 @@ touch_focaltech(void)
+         return 0;
+ }
+ 
++/* ST FTS event FIFO, strictly read-only (see the protocol note above).
++ * Enter/motion update contacts; leave and unknown events just drop ids
++ * from the mask. If the IC is not sensing (fresh power-up without panel
++ * init) the FIFO stays silent and nothing is reported. */
++static int
++touch_stfts(void)
++{
++	uint8_t buf[STFTS_EVT_LEN * 32];
++	int x[TOUCH_MAX] = {0}, y[TOUCH_MAX] = {0};
++	uint32_t mask = 0;
++	const uint8_t cmd = STFTS_FIFO_CMD;
++	int err = touch_msg(STFTS_ADDR, &cmd, 1, buf, STFTS_EVT_LEN, true);
++	if (err) {
++		return err;
++	}
++	if (buf[0] == 0x00u) {
++		return 0; /* EVT_ID_NOEVENT: retain current contacts */
++	}
++	unsigned more = buf[7] & 0x1fu;
++	if (more > 31u) {
++		return EIO;
++	}
++	if (more) {
++		err = touch_msg(STFTS_ADDR, &cmd, 1, buf + STFTS_EVT_LEN,
++		    more * STFTS_EVT_LEN, true);
++		if (err) {
++			return err;
++		}
++	}
++	for (unsigned e = 0; e <= more; ++e) {
++		const uint8_t *evt = buf + e * STFTS_EVT_LEN;
++		unsigned id = (evt[1] & 0xf0u) >> 4;
++		unsigned type = evt[1] & 0x0fu;
++		if (evt[0] >> 4 == 0x1u || evt[0] >> 4 == 0x2u) {
++			/* enter/motion; skip invalid/stylus, accept the rest */
++			if (type == 0x00u || type == 0x03u || id >= TOUCH_MAX) {
++				continue;
++			}
++			int px = (int)(((evt[3] & 0x0fu) << 8) | evt[2]);
++			int py = (int)((evt[4] << 4) | ((evt[3] & 0xf0u) >> 4));
++			if (px > 1079 || py > (int)TOUCH_MAX_Y) {
++				return EIO;
++			}
++			mask |= 1u << id;
++			x[id] = px;
++			y[id] = py;
++		}
++		/* 0x3 leave (drop from mask), 0x4 status, 0x5 user, 0xe debug,
++		 * 0xf error: nothing to do; touch_report() drops the ids. */
++	}
++	touch_report(mask, x, y);
++	return 0;
++}
++
+ static bool
+ touch_se_init(void)
+ {
+@@ -687,27 +754,41 @@ touch_thread(void *arg, wait_result_t result)
+         touch_wait(2);
+         touch_gpio(TOUCH_GPIO_RESET, 0, 3, 3, true, true);
+         touch_wait(300); /* exceeds vendor 5 ms test + 95 ms post-test wait */
+-        uint8_t gid[32], fid1 = 0, fid2 = 0;
++	uint8_t gid[32];
+         st.probing = true;
+         int ge = touch_probe_info(GT9889_VER_REG, gid);
+         printf("SWEET TOUCH: probe 0x5d ver-reg err=%d id=%02x%02x%02x%02x fw=%02x.%02x.%02x.%02x irq=%#x\n",
+             ge, gid[0], gid[1], gid[2], gid[3], gid[8], gid[9], gid[10], gid[11], st.irq_status);
+-        int fe1 = touch_read(0x38, 0xa3, false, &fid1, 1);
+-        int fe2 = touch_read(0x38, 0x9f, false, &fid2, 1);
+-        printf("SWEET TOUCH: probe 0x38 err=%d/%d chip-id=%02x:%02x irq=%#x\n",
+-            fe1, fe2, fid1, fid2, st.irq_status);
++	/* ST FTS diagnostic probe at 0x49 (see the protocol note above).
++	 * The earlier 0x38 "FocalTech" read was a mislabel: raphael's second
++	 * touch driver is ST FingerTipS, and both the MIUI DTB and the
++	 * mainline raphael dts enable only the Goodix — log the id either way. */
++	const uint8_t fts_id_cmd[5] = {0xfa, 0x20, 0x00, 0x00, 0x00};
++	uint8_t fid[2] = {0};
++	int fe = touch_msg(STFTS_ADDR, fts_id_cmd, sizeof(fts_id_cmd), NULL, 0, true);
++	if (!fe) {
++		fe = touch_msg(STFTS_ADDR, NULL, 0, fid, sizeof(fid), false);
++	}
++	printf("SWEET TOUCH: probe ST FTS 0x49 err=%d id=%02x:%02x irq=%#x\n",
++	    fe, fid[0], fid[1], st.irq_status);
+         st.probing = false;
+         bool goodix = !ge && !(gid[0] == 0xa5u && gid[1] == 0xa5u) &&
+             !(gid[0] == 0u && gid[1] == 0u && gid[2] == 0u && gid[3] == 0u);
+-        bool fts = !fe1 && !fe2 && fid1 == 0x54 && fid2 == 0x52;
+-        if (st.dead || !goodix) {
+-                printf("SWEET TOUCH: GT9889 not confirmed (goodix=%d fts=%d dead=%d); stopping\n",
++	bool fts = !fe && (fid[0] || fid[1]);
++	if (st.dead || (!goodix && !fts)) {
++		printf("SWEET TOUCH: no supported IC (goodix=%d st-fts=%d dead=%d); stopping\n",
+                     goodix, fts, st.dead);
+                 goto out;
+         }
+-        st.kind = TOUCH_GOODIX9889;
+-        printf("SWEET TOUCH: selected GT9889, 1080x%u, poll=10ms irq-hint=%d\n",
+-            TOUCH_MAX_Y + 1u, st.irq_hint);
++	if (goodix) {
++		st.kind = TOUCH_GOODIX9889;
++		printf("SWEET TOUCH: selected GT9889, 1080x%u, poll=10ms irq-hint=%d\n",
++		    TOUCH_MAX_Y + 1u, st.irq_hint);
++	} else {
++		st.kind = TOUCH_STFTS;
++		printf("SWEET TOUCH: selected ST FTS id=%02x:%02x, 1080x%u, poll=10ms (read-only bring-up)\n",
++		    fid[0], fid[1], TOUCH_MAX_Y + 1u);
++	}
+ #else
+         printf("SWEET TOUCH: TLMM reset=%#x irq=%#x vdd90=%#x; voting L11C through RPMh\n",
+             touch_rd(st.gpio, TOUCH_GPIO_IO(8)), touch_rd(st.gpio, TOUCH_GPIO_IO(9)),
+@@ -754,10 +835,11 @@ touch_thread(void *arg, wait_result_t result)
+         unsigned errors = 0, ticks = 0;
+         while (!st.dead) {
+                 /* Optional IRQ hint still reads every 100ms, and always while down. */
+-                if (!st.irq_hint || st.active || !(touch_rd(st.gpio, TOUCH_GPIO_IO(9)) & 1u) ||
++		if (!st.irq_hint || st.active || !(touch_rd(st.gpio, TOUCH_GPIO_IO(TOUCH_GPIO_IRQ)) & 1u) ||
+                     (++ticks % 10u) == 0) {
+                         int err = st.kind == TOUCH_GOODIX ? touch_goodix() :
+                             st.kind == TOUCH_GOODIX9889 ? touch_goodix_9889() :
++			    st.kind == TOUCH_STFTS ? touch_stfts() :
+                             touch_focaltech();
+                         if (err) {
+                                 if ((errors++ % 100u) == 0) {

@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index b6c1a41..421c92e 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -47,6 +47,26 @@ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ #define GCC_USB30_PRIM_GDSCR    0x0f004         /* bit 31: power on */
+ #define CBCR_CLK_OFF            (1u << 31)
+ 
++/* Both SoCs share the usb30_prim cluster (GDSC 0xf004, master/sleep/utmi
++ * 0xf010/14/18). Differences (mainline gcc-sm8150.c vs gcc-sm7150.c):
++ * CFG_NOC_USB3_PRIM_AXI 0x502c -> 0xf078, AGGRE_USB3_PRIM_AXI 0x8201c ->
++ * 0xf07c, and the phy reference branch: sm7150 gates the QUSB2 v2 phy on
++ * USB_PHY_CFG_AHB2PHY (0x6a004) with usb3_prim_clkref at 0x8c010, while
++ * sm8150's 7nm snps hs phy takes CXO directly — no ahb2phy branch, and the
++ * wrapper's ref is USB3_SEC_CLKREF (0x8c028; 0x8c010 is gpu_iref there). */
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++static const struct {
++	const char *name;
++	uint32_t    off;
++} usb_cbcr[] = {
++	{ "master", 0x0f010 },
++	{ "sleep", 0x0f014 },
++	{ "utmi", 0x0f018 },
++	{ "cfg-noc-axi", 0x0f078 },
++	{ "aggre-axi", 0x0f07c },
++	{ "phy-ref", 0x8c028 },
++};
++#else
+ static const struct {
+ 	const char *name;
+ 	uint32_t    off;
+@@ -59,6 +79,7 @@ static const struct {
+ 	{ "ahb2phy", 0x6a004 },
+ 	{ "clkref", 0x8c010 },
+ };
++#endif
+ 
+ #define DWC3_PA                 0x0a600000
+ #define DWC3_SIZE               0x0000d000
+@@ -120,7 +141,7 @@ sweet_usb_probe(void)
+ 		sweet_usb_gadget_start(dwc);
+ 	}
+ 	if (cbcr[5] & CBCR_CLK_OFF) {
+-		printf("SWEET USB: ahb2phy clock off; QUSB2 PHY not read\n");
++		printf("SWEET USB: phy ref clock off; QUSB2 PHY not read\n");
+ 		return;
+ 	}
+ 	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);

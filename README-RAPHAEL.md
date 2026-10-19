@@ -6,7 +6,12 @@ Read the main README.md and NOTES.md first; this file only covers what
 differs on raphael. Hardware facts and register-level evidence live in
 NOTES-RAPHAEL.md.
 
-Status: adaptation complete, not yet booted on hardware. Everything is
+Status: adaptation complete, kernel + shim build in CI, first test image
+packaged — not yet booted on hardware. Three follow-up patches (0085-0087,
+2026-10-19) closed the last bring-up gaps using public raphael resources:
+**volume-up** (mainline DTS), **ST FingerTipS touch** as the second-IC path
+(the old "FocalTech" assumption was wrong — see NOTES-RAPHAEL.md), and the
+**USB device/Ethernet port** of patches 0072-0077. Everything is
 `#if defined(ARM64_BOARD_CONFIG_RAPHAEL)`-guarded — building SWEET is
 unaffected.
 
@@ -73,26 +78,65 @@ tools/sweet-log-pull.sh logs/raphael-1.txt         # 4 MiB persistent log ring
 adb reboot bootloader
 ```
 
+Two log channels are available on raphael:
+
+- the persistent 4 MiB userdata log ring (always), and
+- **live USB logs** (patch 0087, same as sweet): while the kernel is up, the
+  phone enumerates as a CDC-ECM ethernet adapter (192.168.7.2/24, host .1) and
+  streams kernel printf over UDP — run `tools/sweet-usbnet.sh` on the PC and
+  `tools/sweet-log.py`. Requires the `sweetusb=2` boot-arg to start the
+  device controller (default `sweetusb=1` only reports clock/GDSC state).
+  `fastboot boot` hands over a running USB controller, so no PHY setup is
+  needed.
+
 First-boot expectations, in order (see NOTES-RAPHAEL.md for the hardware
 evidence behind each): shim console on the 1080x2340 panel -> GIC probe ->
 PSCI version -> XNU -> UFS probe (same host controller as sweet) -> HFS+
 root -> launchd -> backboardd/SpringBoard (~4 min on the Apple logo).
 
-## Known gaps / TODO (see NOTES-RAPHAEL.md)
+## Known gaps / TODO
 
-- **Volume-up source unknown** on raphael (no KEY_VOLUMEUP in any DTS);
-  power + volume-down work via PON. Identify from a live DT before relying
-  on it.
-- **FocalTech fts_521 variant**: some K20 Pro units ship a FocalTech touch
-  controller instead of the Goodix GT9889. v1 only supports Goodix; the
-  probe log prints both attempts (`probe 0x5d ver-reg ...` /
-  `probe 0x38 ... chip-id=..:..`).
-- USB (ue0, patches 0072-0077) not yet ported: raphael DWC3 is at
-  0xa600000 with a QUSB2/QMP PHY pair; the sweet constants need a per-SoC
-  pass. Same for Wi-Fi/BT/audio/SEP — none are expected to work.
+- **Touch second source**: raphael units carry a Goodix GT9889/GT9886 @0x5d
+  (both the MIUI DTB and the mainline DTS agree) — that is the primary path.
+  The kernel source also carries an ST FingerTipS driver (`fts_521`, I2C
+  0x49); patch 0086 probes it and, if the Goodix is absent and the ST chip
+  answers, polls its event FIFO read-only (sensing must be inherited from
+  the previous OS — we never panel-init the IC). The first boot log prints
+  both probes (`probe 0x5d ver-reg ...` / `probe ST FTS 0x49 id=..:..`).
 - `fastboot boot` on raphael ABL with header v1 is the stock-supported
   path; if the ABL rejects our image, try `--header_version 2` (sweet
   style) as a fallback experiment.
+- Wi-Fi/BT/audio/camera/SEP remain unsupported, as on sweet. Modem is not
+  touched.
+
+Closed by public resources (2026-10-19):
+
+- **Volume-up = PM8150 GPIO6, active-low** — settled by the mainline
+  `sm8150-xiaomi-raphael.dts` (`gpio-keys`: `gpios = <&pm8150_gpios 6
+  GPIO_ACTIVE_LOW>`). Patch 0085 polls it through the same read-only SPMI
+  observer channel as the other keys (PPID 0x0c5, RT_STS 0xc510) and also
+  runs a one-shot census of every PMIC GPIO block so the first boot log
+  confirms the mapping on real hardware.
+- **USB (ue0, patches 0072-0077) ported in 0087.** The DWC3 (0xa600000),
+  the wrapper qscratch (0xa6f8800), the QUSB2 HS PHY (0x88e2000) and the
+  GDSC (0xf004) are all identical to sweet; only two GCC clock branches
+  moved (cfg-noc 0xf078, aggre 0xf07c) and the phy ref is USB3_SEC_CLKREF
+  (0x8c028) — see NOTES-RAPHAEL.md for the table.
+
+## Resources worth knowing (K20 Pro has a big scene)
+
+- Mainline DTS: `sm8150-xiaomi-raphael.dts` — [PATCH v2 0/3] Add Xiaomi
+  Redmi K20 Pro (Raphael), patchew.org/linux/20251104221657.51580-1-pc1598@mainlining.org
+- Mainline driver/fixed tree: github.com/howtocuddle/xiaomi_raphael
+  (6.18-based, display ams639rq08 + touch + cameras working)
+- postmarketOS: wiki postmarketos.org xiaomi-raphael, package
+  `linux-xiaomi-raphael` (6.5 kernel fork)
+- Stock kernel sources (touch/panel/keys ground truth):
+  github.com/ZakoClubROM/android_kernel_xiaomi_raphael (branch lineage-19.0:
+  `drivers/input/touchscreen/goodix_driver_gt9886`, `fts_521`; dtsi under
+  `arch/arm64/boot/dts/qcom/raphael-*`)
+- Device trees: LineageOS wiki/device tree for raphael; XDA raphael
+  kernel/recovery threads (OrangeFox/TWRP are used for log pulls)
 
 ## Safety
 

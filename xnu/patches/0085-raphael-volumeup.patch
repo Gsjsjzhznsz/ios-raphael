@@ -1,0 +1,110 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 69fcb6b..21ab6cd 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -1,6 +1,9 @@
+ /*
+  * Minimal polled SWEET keys. Call once after the scheduler is running.
+- * See hw-report.md: volume-up is PM6150L SID 4, NOT PM6150 SID 0.
++ * See hw-report.md: on sweet, volume-up is PM6150L SID 4, NOT PM6150 SID 0.
++ * RAPHAEL (Redmi K20 Pro): the mainline sm8150-xiaomi-raphael.dts settles the
++ * last unknown — volume-up = pm8150_gpios 6 GPIO_ACTIVE_LOW (SID 0, GPIO6
++ * block at 0xc500), same read-only observer-channel access as sweet.
+  * PMIC access is READ ONLY: the sole MMIO write issues EXT_READL on an
+  * observer channel. No PMIC config, IRQ acknowledge or reset writes exist.
+  */
+@@ -21,9 +24,26 @@ void sweet_keys_init(void);
+ #define KEYS_OBS_PA      0x0e600000u
+ #define KEYS_CNFG_PA     0x0c40a000u
+ #define KEYS_PON_RT      0x0810u
+-#define KEYS_GPIO_RT     0xc110u
+ #define KEYS_NO_APID     0xffffu
+ 
++/* Volume-up GPIO peripheral. PPID = (SID << 8) | (block_base >> 8);
++ * per-GPIO register window = block_base: RT_STS +0x10, MODE +0x40,
++ * EN +0x46, TYPE +0x05. Sweet: pm6150l gpio2 (0xc100). Raphael:
++ * pm8150 gpio6 (0xc500), per the mainline raphael dts (active-low). */
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++#define KEYS_GPIO_PPID   0x0c5u
++#define KEYS_GPIO_RT     0xc510u
++#define KEYS_GPIO_MODE   0xc540u
++#define KEYS_GPIO_EN     0xc546u
++#define KEYS_GPIO_TYPE   0xc505u
++#else
++#define KEYS_GPIO_PPID   0x4c1u
++#define KEYS_GPIO_RT     0xc110u
++#define KEYS_GPIO_MODE   0xc140u
++#define KEYS_GPIO_EN     0xc146u
++#define KEYS_GPIO_TYPE   0xc105u
++#endif
++
+ static vm_offset_t keys_core, keys_obs, keys_cnfg;
+ static uint16_t keys_pon_apid = KEYS_NO_APID, keys_gpio_apid = KEYS_NO_APID;
+ static uint32_t keys_version, keys_last_status;
+@@ -81,6 +101,37 @@ keys_read(uint16_t apid, uint16_t addr, uint8_t *out)
+ 	return false;
+ }
+ 
++/* One-shot read-only census of PMIC GPIO peripherals (type 0x10-0x13) on
++ * every slave the mapping table exposes. Logs live configuration evidence
++ * (mode/en/rt-status) so the first boot on a new board settles any mapping
++ * doubt without guessing. No writes, bounded by the arbiter count. */
++static void
++keys_gpio_census(uint32_t count)
++{
++	for (uint32_t i = 0; i < count; ++i) {
++		uint32_t map = keys_rd(keys_core, 0x900u + 4u * i);
++		uint32_t ppid = (map >> 8) & 0xfffu;
++		if (map == 0 || (ppid >> 8) > 5u) {
++			continue;
++		}
++		uint32_t per = ppid & 0xffu;
++		if (per < 0xc0u || per > 0xd8u) {
++			continue; /* GPIO blocks live at 0xc000-0xd8xx */
++		}
++		uint16_t base = (uint16_t)(per << 8);
++		uint8_t type = 0, mode = 0, en = 0, rt = 0;
++		if (!keys_read((uint16_t)i, base + 0x05u, &type) ||
++		    type < 0x10u || type > 0x13u) {
++			continue;
++		}
++		(void)keys_read((uint16_t)i, base + 0x40u, &mode);
++		(void)keys_read((uint16_t)i, base + 0x46u, &en);
++		(void)keys_read((uint16_t)i, base + 0x10u, &rt);
++		printf("SWEET KEYS: census apid=%u ppid=%#x type=%#x mode=%#x en=%#x rt=%#x\n",
++		    i, ppid, type, mode, en, rt);
++	}
++}
++
+ static void
+ keys_wait(void)
+ {
+@@ -153,20 +204,19 @@ sweet_keys_init(void)
+ 	}
+ 	keys_pon_apid = keys_find_apid(0x008, count);
+ #if defined(ARM64_BOARD_CONFIG_RAPHAEL)
+-	/* K20 Pro: power = PM8150 PON KPDPWR, volume-down = PON RESIN.
+-	 * Volume-up is not a PM6150L GPIO2 here; the TLMM/PMIC mapping is
+-	 * not yet confirmed from the live DT, so keep it withheld. */
+-	keys_gpio_apid = KEYS_NO_APID;
+-	printf("SWEET KEYS: raphael volume-up withheld (mapping TBD from live DT)\n");
++	/* K20 Pro: power = PM8150 PON KPDPWR, volume-down = PON RESIN,
++	 * volume-up = PM8150 GPIO6 (mainline dts: pm8150_gpios 6, active-low). */
++	keys_gpio_apid = keys_find_apid(KEYS_GPIO_PPID, count);
++	keys_gpio_census(count);
+ #else
+-	keys_gpio_apid = keys_find_apid(0x4c1, count);
++	keys_gpio_apid = keys_find_apid(KEYS_GPIO_PPID, count);
+ #endif
+ 	uint8_t pon = 0, gpio = 0, mode = 0, en = 0, subtype = 0;
+ 	bool pok = keys_read(keys_pon_apid, KEYS_PON_RT, &pon);
+ 	bool gok = keys_read(keys_gpio_apid, KEYS_GPIO_RT, &gpio);
+-	bool mok = keys_read(keys_gpio_apid, 0xc140, &mode);
+-	bool eok = keys_read(keys_gpio_apid, 0xc146, &en);
+-	bool sok = keys_read(keys_gpio_apid, 0xc105, &subtype);
++	bool mok = keys_read(keys_gpio_apid, KEYS_GPIO_MODE, &mode);
++	bool eok = keys_read(keys_gpio_apid, KEYS_GPIO_EN, &en);
++	bool sok = keys_read(keys_gpio_apid, KEYS_GPIO_TYPE, &subtype);
+ 	printf("SWEET KEYS: arb=%#x apids=%u pon-apid=%u gpio4-apid=%u pon=%#x/%d gpio=%#x/%d mode=%#x/%d en=%#x/%d subtype=%#x/%d\n",
+ 	    keys_version, count, keys_pon_apid, keys_gpio_apid,
+ 	    pon, pok, gpio, gok, mode, mok, en, eok, subtype, sok);

@@ -8,6 +8,10 @@ As of **2026-10-18** the phone boots to the **iOS home screen**. You can unlock 
 
 > Experimental bring-up, not a usable phone OS. Many things are missing or stubbed (see below), and Apple's security model is mostly switched off. It installs into the `userdata` partition and so **erases Android's user data**.
 
+## Redmi K20 Pro port (`raphael`, SM8150) — in progress
+
+The same port is being brought up on the **Redmi K20 Pro / Mi 9T Pro** (`raphael`, Snapdragon 855): machine config, keys, touch, display and the USB/Ethernet log path are already adapted (patches 0082-0087, all guarded by `ARM64_BOARD_CONFIG_RAPHAEL`), the kernel compiles in CI, and a first `fastboot boot` test image is packaged — but it has **not yet been booted on hardware**, so there is nothing to see yet. See **[README-RAPHAEL.md](README-RAPHAEL.md)** for build/test instructions and **[NOTES-RAPHAEL.md](NOTES-RAPHAEL.md)** for the register-level hardware evidence. Everything below describes the working `sweet` port.
+
 ## What works
 
 | Area | State |

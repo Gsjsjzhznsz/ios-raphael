@@ -1,0 +1,77 @@
+# Worklog
+
+---
+Task ID: 1
+Agent: Super Z (main agent)
+Task: 研究 ios-sweet 项目并将 iOS 16 (XNU) 移植到 Redmi K20 Pro (raphael / SM8150)
+
+Work Log:
+- 深度研究了 dipa-studio/ios-sweet：README、NOTES.md（385 行工程日志）、81 个内核补丁、shim、AGENTS.md
+- 评估 raphael 可行性：SM8150 与 SM7150 同代（Kryo 400、ARMv8.2 无 PAC、GICv3 双安全态、GENI/QUP、RPMh、SPMI、DWC3、UFS 2.1）
+- 获取硬件事实三重来源：用户提供的 V12.5.6.0.RFKCNXM 官方固件（Range 分片并行下载 2.5GB 前缀，提取 boot.img + 4 个 SoC DTB）、Xiaomi raphael 内核源码 DTS（GitHub API 逐文件抓取）、mainline 参照
+- 关键硬件验证（boot.img DTB 实证）：GICD 0x17a00000/GICR 0x17a60000、UFS 0x1d84000、SPMI 0xc440000/0xe600000/0xc40a000、RPMh RSC 0x18220000/TCS 0x18220d00、PSHOLD 0xc264000、帧缓冲 0x9c000000(0x2400000)、MPIDR Aff1=核号、定时器 PPI 18/19、imem 重启寄存器 0x146bf65c
+- 触摸：Goodix GT9889 @0x5d SE19(0xc88000, wrap2_s2: 投票 BIT6@0x52014, RCG 0x1e3a8)，供电 TLMM GPIO98(3V3)/GPIO100(1V8)，reset GPIO54/IRQ GPIO122，GTX8 0x824E 协议（8字节/点小端坐标）
+- 音量上键：所有 DTS 无 KEY_VOLUMEUP，暂缺（withheld），需真机 live DT 确认
+- 下载 xnu-8796.141.3 源码（80MB），按序应用全部 81 个 sweet 补丁（含 libpthread/HFS/BearSSL staging，Linux 下伪造 xcrun/SDK stub）
+- 编写 raphael 适配（全部 #if ARM64_BOARD_CONFIG_RAPHAEL 门控，SWEET 构建不变）：
+  - 补丁 0082-raphael-machine-config（机器配置注册 + 复用 SWEET 驱动集）
+  - 补丁 0083-raphael-input（GT9889 协议 + SE19 时钟/引脚 + TLMM 供电 + keys PON-only）
+  - 补丁 0084-raphael-display（1080x2340：early console、start.s panic 行、SweetHID 缩放）
+  - mkadt.py --raphael（面板/时钟/Kryo485）、shim RAPHAEL=1（FB 高度、imem、boot header v1 + DTB 追加）
+  - tools/build-raphael.sh、tools/raphael-dtb-extract.py、tools/package-raphael.py（python-only 打包）
+  - stage 脚本放开 MACHINE_CONFIG 门控；README-RAPHAEL.md、NOTES-RAPHAEL.md
+- 补丁自测：重置到 pre-raphael 树重放 0082→0084 全部干净应用
+- 用户提供的 GitHub token：fork → Gsjsjzhznsz/ios-sweet；推送 main+raphael 分支；注册并激活 Actions；触发三路构建：xnu(RAPHAEL 内核, run 39246750285)、raphael(shim, run 39246795196)、xnu(SWEET 验证, run 39246201208)
+
+Stage Summary:
+- 交付物：Gsjsjzhznsz/ios-sweet fork（main = 完整移植），本地 /home/z/my-project/ios-sweet-raphael/ios-sweet
+- raphael ADT 生成验证通过（1080×2340/4320、Kryo485 时钟、MPIDR、UFS 基址）
+- 三路 CI 运行中，等待产物：kernel.development.raphael + raphael-shim/Image
+- 下一步：CI 产物下载 → 本地组装 shim-boot-raphael.img（package-raphael.py）→ 用户真机 fastboot boot 测试 → 按日志迭代
+
+---
+Task ID: 2
+Agent: Super Z (main agent)
+Task: 完成 raphael 移植的 CI 构建闭环并产出首测镜像
+
+Work Log:
+- 用户提供了 GitHub token，fork 到 Gsjsjzhznsz/ios-sweet，推送 main+raphael 分支
+- CI 迭代修复链（每轮拉取 Actions 日志定位）：
+  1. makedefs arm64e 豁免条件写反（ifneq→ifeq filter）→ SWEET 构建回归，修复后 main 分支 SWEET 构建成功
+  2. 缺 config/MASTER.arm64.raphael → nos_arm_pmap/mockfs/sweet_hfs 选项缺失 → vm_last_phys 链接失败 → 创建（复用 sweet 选项集）
+  3. bsd/conf/Makefile.template 的 SWEET 门控 → pthread/HFS include 路径 → 放开给 RAPHAEL
+  4. libkern/conf/Makefile.template 同样的 BearSSL include 门控 → 放开
+  5. MACHINE_FLAGS_ARM64_RAPHAEL 需同时定义 ARM64_BOARD_CONFIG_SWEET（驱动文件首行守卫在 include 前求值）
+  6. vendor AOSP mkbootimg.py（LineageOS 镜像，gki 签名桩化）；package-raphael.py 参数前缀修复
+- 最终结果：xnu.yml run 39257766195 SUCCESS → kernel.development.raphael (17.2MB)；raphael.yml shim 构建成功
+- 本地组装：mkadt --raphael --highmem → mkpayload（16.6MB payload，链式重定位已解）→ package-raphael.py 打包
+- 交付物（/home/z/my-project/download/）：shim-boot-raphael.img (17.3MB, 结构校验全过：ANDROID! v1 头/DTB magic/SWEETXNU payload)、payload、ADT、内核、测试说明
+
+Stage Summary:
+- RAPHAEL 内核在 GitHub macOS runner 上完整编译链接成功；首测镜像就绪
+- SWEET 回归验证通过（main 分支构建成功）
+- 用户下一步：fastboot boot shim-boot-raphael.img 冒烟测试 → 构建 iOS rootfs → 完整启动
+
+---
+Task ID: 3
+Agent: Super Z (main agent)
+Task: 更新仓库 README + 利用 K20 Pro 公开资源（mainline DTS/内核源码）关闭移植缺口（音量上键/触摸二供/USB），worklog 入库
+
+Work Log:
+- 资源调研（K20 Pro 场景优势兑现）：
+  - mainline 补丁系列 "[PATCH v2 0/3] Add Xiaomi Redmi K20 Pro (Raphael)"（patchew 20251104221657, pc1598@mainlining.org）→ 音量上键实锤：pm8150_gpios 6 GPIO_ACTIVE_LOW
+  - howtocuddle/xiaomi_raphael（6.18 mainline 状态：显示 ams639rq08/触摸/相机）+ ZakoClubROM/android_kernel_xiaomi_raphael lineage-19.0 分支
+  - 内核源码 drivers/input/touchscreen/：goodix_driver_gt9886 + fts_521 → 证实 fts_521 是 ST FingerTipS（I2C 0x49，0xFA+4字节大端地址读 0x20000000 芯片ID，FIFO 0x86 读 8 字节事件 b0>>4=enter/motion/leave），此前"FocalTech 0x38"判断为误读
+  - mainline sm8150.dtsi + gcc-sm8150.c：USB30_PRIM 的 DWC3 0xa600000/qscratch 0xa6f8800/QUSB2 0x88e2000/GDSC 0xf004 与 sweet 完全相同；仅 cfg-noc 0x502c→0xf078、aggre 0x8201c→0xf07c、phy-ref=USB3_SEC_CLKREF 0x8c028（0x8c010 在 sm8150 是 gpu_iref）
+- 编写补丁（xnu-tree 编辑 → git diff 生成，重放验证干净应用）：
+  - 0085-raphael-volumeup.patch：keys GPIO 常量按板分级（PPID 0x0c5/RT 0xc510）+ keys_gpio_census() 一次性只读普查全部 PMIC GPIO 块作为真机证据
+  - 0086-raphael-touch-stfts.patch：更正二供为 ST FTS；0x49 只读探测打日志；Goodix 失败且 0x49 应答时走 touch_stfts() 只读事件泵；修复轮询 IRQ 引脚硬编码 9 → TOUCH_GPIO_IRQ(122)
+  - 0087-raphael-usb.patch：usb_cbcr 表按板分级（含注释差异表），phy 探测门控改为 phy-ref；ue0/ECM/UDP 日志链路全部激活（boot-arg sweetusb=2）
+- 文档：README.md 加 raphael 版块；README-RAPHAEL.md 重写状态/缺口/资源清单；NOTES-RAPHAEL.md 补音量键、ST FTS 更正、USB 对照表、外部来源清单
+- 工程卫生：Edit 工具把整文件 tab→空格导致 749 行空白噪声 diff，写 scripts/restore_indent.py 以 HEAD 为基准恢复原始缩进（最终 diff 仅 +177/-24）；语法平衡检查通过
+- worklog 同步入库为 docs/WORKLOG.md（用户新要求：防记忆丢失）
+
+Stage Summary:
+- 三个移植缺口全部关闭（音量上键/触摸二供/USB 日志通道），补丁已验证可干净重放
+- 文档三件套与资源链接更新完毕，rme：mainline 化的硬件事实表可直接支撑后续真机调试
+- 下一步：push → CI 重建 RAPHAEL 内核 → 重打包 shim-boot-raphael.img → 用户真机测试
