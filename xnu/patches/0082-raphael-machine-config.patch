@@ -1,0 +1,63 @@
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index 9a748ea..736cf67 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -29,7 +29,7 @@ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else ifneq ($(findstring _host,$(RC_ProjectName)),)
+ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else
+-SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 T6000 T8101 T8103 VMAPPLE SWEET
++SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 T6000 T8101 T8103 VMAPPLE SWEET RAPHAEL
+ 
+ endif
+ 
+@@ -62,6 +62,7 @@ MACHINE_FLAGS_ARM64_T6000 = -DARM64_BOARD_CONFIG_T6000 		-mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
+ MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
+ MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8.2-a+crypto
++MACHINE_FLAGS_ARM64_RAPHAEL = -DARM64_BOARD_CONFIG_RAPHAEL            -march=armv8.2-a+crypto
+ 
+ 
+ #
+@@ -261,7 +262,7 @@ ifeq ($(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG),)
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := $(shell echo $(CURRENT_ARCH_CONFIG) | tr A-Z a-z)
+ ifneq ($(filter arm64,$(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG)),)
+ # sweet's Cortex-A76/A55 have no pointer authentication: stay plain arm64
+-ifneq ($(CURRENT_MACHINE_CONFIG),SWEET)
++ifneq ($(filter SWEET RAPHAEL,$(CURRENT_MACHINE_CONFIG)),)
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
+ endif
+ endif
+diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+index 88e524a..c379503 100644
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -97,6 +97,28 @@
+ #define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
+ #endif  /* ARM64_BOARD_CONFIG_BCM2837 */
+ 
++#ifdef ARM64_BOARD_CONFIG_RAPHAEL
++/*
++ * Board config for the Redmi K20 Pro ("raphael", Qualcomm SM8150 /
++ * Snapdragon 855): Kryo 485 = Cortex-A76 + Cortex-A55, ARMv8.2, no PAC.
++ * The platform is the same Qualcomm generation as SWEET (GICv3 with two
++ * security states, Group-1 timer IRQs, GENI/QUP, RPMh, SPMI, DWC3, UFS),
++ * so RAPHAEL reuses the entire SWEET driver set and only diverges in
++ * device-specific constants (bsd/dev/sweet_touch.c, NOTES-RAPHAEL.md).
++ * Defining ARM64_BOARD_CONFIG_SWEET here selects all shared code paths;
++ * raphael deltas key off ARM64_BOARD_CONFIG_RAPHAEL.
++ */
++#define ARM64_BOARD_CONFIG_SWEET
++#include <pexpert/arm64/SWEET.h>
++
++#define MAX_L2_CLINE                   6
++#define MAX_CPUS                       8
++#define MAX_CPU_CLUSTERS               1
++
++#define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
++
++#endif  /* ARM64_BOARD_CONFIG_RAPHAEL */
++
+ #ifdef ARM64_BOARD_CONFIG_SWEET
+ #include <pexpert/arm64/SWEET.h>
+ 

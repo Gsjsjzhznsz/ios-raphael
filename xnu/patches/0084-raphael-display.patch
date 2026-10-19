@@ -1,0 +1,32 @@
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 023086f..4625d23 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -515,7 +515,11 @@ LEXT(start_first_cpu)
+ 
+ #if defined(SWEET)
+ 	/* Stage 0: white 64x32 band, no stack or page tables needed. */
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++	MOV64	x0, (0x9c000000 + 2308 * 4320)
++#else
+ 	MOV64	x0, (0x9c000000 + 2368 * 4320)
++#endif
+ 	mov		w1, #-1
+ 	mov		x2, #32
+ 	mov		x4, #4320
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 6928957..65fd20a 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -14,7 +14,11 @@
+ static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
+ #define EARLY_FB early_fb
+ #define EARLY_WIDTH 1080u
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++#define EARLY_HEIGHT 2340u
++#else
+ #define EARLY_HEIGHT 2400u
++#endif
+ #define EARLY_STRIDE (4320u / 4)
+ #define EARLY_SCALE 2u
+ #define EARLY_CELL_W (8u * EARLY_SCALE)

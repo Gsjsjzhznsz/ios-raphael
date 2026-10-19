@@ -2,7 +2,21 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--raphael]
+
+--raphael: Xiaomi Redmi K20 Pro (SM8150 / Snapdragon 855). The platform is
+the same Qualcomm generation as sweet (Kryo 400 series, ARMv8.2 without PAC,
+GICv3 with security extensions, GENI/QUP, RPMh, SPMI, DWC3, UFS 2.1), so the
+ADT differs only in numbers:
+  - native panel 1080x2340 (K20 Pro AMOLED) instead of 1080x2400; the
+    presented canvas stays 1125x2436 (iPhone X)
+  - ABL cont_splash framebuffer: same base 0x9c000000, size 0x2400000
+    (sm8150.dtsi reserved-memory cont_splash_region), height 2340
+  - CPU clocks: cpu0 Kryo 485 Prime 2.8416 GHz, cpu1-3 Gold 2.4192 GHz,
+    cpu4-7 Silver 1.8048 GHz; MPIDR Aff1 = core, same layout as sweet
+Everything else (GICD/GICR, UFS 1d84000, 19.2 MHz timebase, vtimer INTID 19,
+compatible strings incl. 'xiaomi,sweet' for the SWEET platform expert) is
+identical to sweet; see NOTES-RAPHAEL.md for the extracted hardware facts.
 """
 import hashlib, os, struct, sys
 
@@ -25,6 +39,10 @@ GICR, GICR_SIZE = 0x17a60000, 0x100000
 FB, FB_SIZE = 0x9c000000, 0x1700000
 SWEET_ECID = 0x5357454554000001  # 'SWEET' + 1, synthetic
 FB_W, FB_H, FB_STRIDE = 1080, 2400, 1080 * 4
+# Redmi K20 Pro ("raphael", SM8150): same FB base (cont_splash_region
+# 0x9c000000/0x2400000), native panel 1080x2340.
+RAPHAEL_FB_H = 2340
+RAPHAEL_FB_STRIDE = 1080 * 4
 # Internal UFS host (ufshc@1d84000 "ufs_mem"); QEMU virt has none
 UFS, UFS_SIZE = 0x01d84000, 0x3000
 TIMEBASE = 19200000
@@ -68,9 +86,11 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False):
-    """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
+def build(seed=None, qemu=False, highmem=False, raphael=False):
+    """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py).
+    raphael=True: Redmi K20 Pro panel geometry and Kryo 485 clocks."""
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
+    fb_h, fb_stride = (RAPHAEL_FB_H, RAPHAEL_FB_STRIDE) if raphael else (FB_H, FB_STRIDE)
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
     seed = seed if seed is not None else os.urandom(64)
     phandle = iter(range(1, 1000))
@@ -125,10 +145,17 @@ def build(seed=None, qemu=False, highmem=False):
     # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
     cpu_nodes = []
     for core in range(1 if qemu else 8):
+        # SM8150 (raphael): cpu0 = Kryo 485 Prime 2.8416 GHz, cpu1-3 Gold
+        # 2.4192 GHz, cpu4-7 Silver 1.8048 GHz (sm8150.dtsi CPU0..CPU7);
+        # SM7150 (sweet): cpu0-5 A55 1.8048 GHz, cpu6-7 A76 2.304 GHz.
+        if raphael:
+            freq = 2841600000 if core == 0 else (2419200000 if core < 4 else 1804800000)
+        else:
+            freq = 2304000000 if core >= 6 else 1804800000
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr('qcom,kryo470') + cstr('ARM,v8')),
+            ('compatible', cstr('qcom,kryo485' if raphael else 'qcom,kryo470') + cstr('ARM,v8')),
             ('reg', u32(core << 8)),  # actual MPIDR Aff1:Aff0, NOT logical ID
             ('cpu-id', u32(core)),   # descriptive: XNU assigns IDs by DT order
             ('cluster-id', u32(0)),  # descriptive; see ml_parse_cpu_topology
@@ -139,7 +166,7 @@ def build(seed=None, qemu=False, highmem=False):
             ('l3-cache-id', u32(0)),     # shared L3
             ('state', cstr('running' if core == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(2304000000 if core >= 6 else 1804800000)),
+            ('clock-frequency', u32(freq)),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),
@@ -183,8 +210,8 @@ def build(seed=None, qemu=False, highmem=False):
         ph(),
         ('reg', u64(FB, FB_SIZE)),
         ('width', u32(FB_W)),
-        ('height', u32(FB_H)),
-        ('stride', u32(FB_STRIDE)),
+        ('height', u32(fb_h)),
+        ('stride', u32(fb_stride)),
     ])
 
     # bsd/dev/sweet_ufs.c: the UFS host ABL leaves running (absolute physical reg).
@@ -228,7 +255,8 @@ def build(seed=None, qemu=False, highmem=False):
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv)
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
+                 raphael='--raphael' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
