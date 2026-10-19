@@ -1,0 +1,127 @@
+================================================================
+ios-sweet · raphael 无电脑测试【第三轮：阶段码 + USB 判别】
+配套镜像：shim-boot-raphael-diag4.img（v1，首选）
+          shim-boot-raphael-diag4-v2.img（v2，v1 被拒时用）
+复用镜像：第二轮的 shim-boot-raphael-diag.img（v1，第 2 步用）
+================================================================
+
+【第二轮结果解读——三个重要更正】
+
+1) crumb.bin 只有 22 字节 = 提取命令本身失败了。
+   正确命令 `tail -c 4096 /dev/block/by-name/userdata > crumb.bin`
+   产出的文件一定是 4096 字节。22 字节说明当时管道/命令没跑对，
+   所以"没有 SHIMCRMB"这个结论还不能下——面包屑可能一直就在闪存里。
+   第 0 步会重新提取一次。
+
+2) sweet-full.bin 全乱码 ≠ 写盘逻辑坏了。
+   内核持久日志线程挂在 XNU UFS 驱动 probe 成功之后（补丁 0047），
+   而 855 的 UFS 驱动本来就还没通（root 挂载是后续里程碑）。
+   内核根本没跑到那一步，自然一个字节都没写。这是预期内的"没有"，
+   不是"写了但写错位置"。
+
+3) idVendor=18d1 / product=Android 大概率不是内核的 USB。
+   内核 USB（补丁 0073/0075）枚举出来是 1209:0001、product 字符串
+   "Sweet iOS (USB bring-up)"。18d1+Android 是 ABL fastboot gadget
+   的典型特征：`fastboot boot` 之后如果内核从没碰过 USB 控制器，
+   ABL 配置的那个设备会一直挂在主机上不被注销。鉴别方法见第 0 步。
+   另：黑屏本身就是"结构性"的——0084 只做了 1080x2340 几何，
+   还没有 DSI/面板初始化；fastboot boot 后 ABL 会关显示，内核
+   点不亮 → 任何正常的启动在 raphael 上都是黑的。屏幕不是崩溃信号。
+
+--------------------------------------------------
+第 0 步 · 零镜像复查（5 分钟，先做这个）
+--------------------------------------------------
+A. 重新提取面包屑（recovery 终端，逐行粘贴，注意 wc 必须是 4096）：
+      tail -c 4096 /dev/block/by-name/userdata > /sdcard/crumb.bin
+      wc -c /sdcard/crumb.bin        # 必须显示 4096
+      strings /sdcard/crumb.bin
+   若 strings 出现 SHIMCRMB：把 crumb.bin 发我——里面的 MAIN/DTB/
+   PLD/SEG/JUMP 记录直接回答"shim 走到了哪"，第 1 步都可以跳过。
+
+B. USB 归属判别（主机手机 Termux）：
+   ① K20 Pro 进 fastboot，OTG 连主机，确认主机 `fastboot devices`
+      能看到它；
+   ② 照常 `fastboot boot shim-boot-raphael-diag.img`（第二轮的 v1）；
+   ③ boot 命令返回后 60 秒内，主机执行：
+         fastboot devices
+      如果还能列出设备 → 18d1 是 ABL 残留的 fastboot gadget
+      （内核不会说 fastboot 协议）⇒ 内核 USB 尚未初始化。
+      如果列表为空，再查：
+         cat /sys/bus/usb/devices/*/idVendor
+         cat /sys/bus/usb/devices/*/product
+      出现 1209 / "Sweet iOS (USB bring-up)" ⇒ 内核跑到了 USB
+      初始化（重大进展，直接跳第 2 步抓直播日志）。
+
+--------------------------------------------------
+第 1 步 · diag4 阶段码镜像（核心；一轮只要 2.5 分钟）
+--------------------------------------------------
+原理：diag4 在 shim 每个阶段落一个"阶段码"，走到"本来要跳进 XNU"
+的位置就停下，按 20 + 20×阶段码 秒数自动重启。手机对手机没有
+屏幕/闪存/USB 都没关系——一只秒表就能读出 shim 死在哪一步。
+同时它还会把阶段码 + 面包屑故障码 + 异常寄存器写进 DDR 的 ramoops
+预留区（原厂 pstore 区，任何 recovery 都能用 devmem 读出）。
+
+1) 主机执行：
+      fastboot boot shim-boot-raphael-diag4.img
+   （提示 Booting OKAY 后立刻掐表；v1 被拒就用 diag4-v2）
+2) 等待自动重启，对照下表（从 Booting OKAY 那一刻计时）：
+      ~40 秒  → shim 异常！立即按第 3 步读寄存器
+      ~100 秒 → 阶段 4：内核段拷贝完成，死在 ADT/boot_args 写入
+      ~120 秒 → 阶段 5：boot_args 就绪，没走到跳转点
+      ~140 秒 → 阶段 6：shim 全部工作完成——问题 100% 在 XNU 侧
+      ~200 秒 → DTB/initrd/payload 头校验失败（老错误路径）
+      超过 6 分钟仍不重启 → ABL 没交控制权，或 shim 在第一条
+        UFS 面包屑命令里挂死（两种都会在第 3 步里现形）
+   注意：让手机自己重启，不要长按强关——长按是硬复位，DDR 里的
+   阶段记录会丢（闪存面包屑还在，但 DDR 记录没了）。
+   自动重启后手机多半会直接回 fastboot（重启原因写的是
+   bootloader）——正好接着测下一个镜像。
+
+--------------------------------------------------
+第 2 步 · USB 直播日志（仅当第 0 步 B 看到 1209）
+--------------------------------------------------
+内核一旦枚举出 1209，就会把完整启动日志（含此前全部历史）每 100ms
+以 UDP 推到 192.168.7.1:5140。主机手机需要拿到 192.168.7.1 这个地址：
+1) 先试 root：Termux 里 `su -c id`。
+   有 root：
+      # 插线 boot diag 镜像后：
+      ip link                      # 找到新网卡（MAC 02:00:5e:77:ee:01）
+      su -c "ip addr replace 192.168.7.1/24 dev <网卡名> && ip link set <网卡名> up"
+      nc -ukl 5140                 # 屏幕上滚出来的就是内核日志
+2) 没有 root：枚举本身就是结论（内核活着、USB 通了），日志留待
+   下一轮把接收端做进 TWRP。照样把 `cat /sys/bus/usb/devices/*/idVendor`
+   和 idProduct 的输出发我。
+
+--------------------------------------------------
+第 3 步 · 读 DDR 阶段记录（每次 diag4 boot 后都读一次）
+--------------------------------------------------
+recovery 终端（OrangeFox/TWRP 都是 root，toybox 自带 devmem）：
+      devmem 0xa1dff000    # 期望 0x44475453 = 'STGD'
+      devmem 0xa1dff004    # 0x02NNNNNN：低 3 位十六进制是阶段码
+                           #   1..6 = 阶段；0xF0x = 异常（x=槽号）
+      devmem 0xa1dff008    # 面包屑故障码（下表）
+      devmem 0xa1dff00c    # 1 = stage 模式已生效
+第二份拷贝在 0xa1601000（同样偏移），两份不一致说明 DDR 曾被中途改写。
+把四个值拍照/抄下来发我。
+
+面包屑故障码（0xa1dff008 的含义）：
+      0x00000000  面包屑从未执行（死在 MAIN 面包屑之前）
+      0x00010000  面包屑子系统正常（低位有写失败码则是"能读不能写"）
+      0x0000nn11  写超时 / 0x12 OCS 错 / 0x13 无响应 / 0x14 SCSI 拒绝
+      0x00000001  UFS host 未就绪（ABL 留下的状态和我们预期不同）
+      0x00000002  接管传输请求列表失败
+      0x00000003  测试单元就绪命令失败
+      0x00000004  GPT 头读取失败
+      0x00000005  GPT 格式不符合预期
+      0x00000006  GPT 表项读取失败
+      0x00000007  GPT 里没有名为 userdata 的分区（分区名/LUN 对不上）
+      0x00000008  userdata 末 LBA 超出 32 位
+
+--------------------------------------------------
+发送清单（无论走到哪一步）
+--------------------------------------------------
+① crumb.bin（第 0 步 A，wc -c 必须 4096）
+② diag4 的掐表结果（上面五选一）+ devmem 四个值
+③ fastboot devices / idVendor / idProduct 的输出
+④ 如果第 2 步成功：nc -ukl 5140 的截图或录屏
+================================================================

@@ -92,10 +92,14 @@ ios-sweet · Redmi K20 Pro（raphael）无电脑测试指南
    下载 zip 后用 ZArchiver 解压出 recovery.img。
 2. K20 Pro 回 fastboot，主机执行：
       fastboot boot recovery.img      （同样是临时引导，不刷分区）
-3. OrangeFox 菜单 → Terminal（终端），粘贴下面整行并回车：
-   dev=/dev/block/by-name/userdata; [ -e $dev ] || dev=/dev/block/bootdevice/by-name/userdata; b=$(blockdev --getsize64 $dev); dd if=$dev bs=4096 skip=$((b/4096-1025)) count=1025 of=/sdcard/sweet-log.bin && echo LOG-OK
-4. 重启 K20 Pro 回 Android，把 /sdcard/sweet-log.bin（约 4MB）用
-   微信/QQ/网盘任意方式发给我。
+3. OrangeFox/TWRP 菜单 → Terminal（终端），粘贴下面整行并回车：
+   tail -c 4198400 /dev/block/by-name/userdata > /sdcard/sweet-log.bin && echo LOG-OK
+   （注意：不要用 blockdev/dd——TWRP 下 blockdev --getsize64 会返回负数
+   导致 dd 报错，真机实测过。tail -c 直接取分区末尾 4MiB+4KiB，即内核
+   日志环 + 日志头块，也顺带覆盖了 shim 面包屑块。）
+4. 验证大小后重启 K20 Pro 回 Android，把 /sdcard/sweet-log.bin 用
+   微信/QQ/网盘任意方式发给我：
+      wc -c /sdcard/sweet-log.bin      # 应显示 4198400
    备选：主机 Termux 里也可以 adb 直接拉——K20 Pro 进 OrangeFox 后
    插 OTG，主机执行 adb devices → adb shell（粘贴上面同一行）→
    adb pull /sdcard/sweet-log.bin。

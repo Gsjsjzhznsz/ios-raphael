@@ -150,3 +150,21 @@ Work Log:
 Stage Summary:
 - 第二轮测试三证据通道：闪存面包屑（核心）+ sweet-full.bin 日志头 + 主机 sysfs USB 枚举
 - 等待用户回传 crumb.bin / sweet-full.bin；JUMP 后无内核日志 ⇒ 内核极早期问题，有 EXC ⇒ shim 可定位
+
+---
+Task 8
+Agent: Super Z (main agent)
+Task: 第二轮证据解读 + shim 阶段码诊断（diag4）交付
+
+Work Log:
+- 证据更正：crumb.bin 仅 22 字节 = 提取命令失败（tail -c 4096 必产 4096），"无面包屑"结论未定；sweet-full.bin 乱码 = 内核 UFS 驱动未通（预期，0047 日志线程挂在 UFS probe 后）；18d1/Android = ABL fastboot gadget 残留（XNU 应枚举 1209/Sweet iOS），加 fastboot devices 判别法
+- 确认 0084 无 DSI/面板初始化 → fastboot boot 后 ABL 关显示，黑屏是结构性预期，不是崩溃信号
+- shim 阶段诊断（6b2b23c + 修复 b5c9e04，CI run 39292316444）：ramoops 区（0xa1dff000/0xa1601000，原厂 DTS pstore 请求 0xc00000 > 区 0x800000 永不绑定）写 STGD 二进制+ASCII 记录（阶段码/面包屑故障码/ESR/ELR/FAR）；shimstage=1 boot 不跳 XNU，按 20+20×阶段 秒自动重启（140s=阶段6→XNU侧问题；40s=异常；200s=校验失败；永不=极早期挂死）
+- ufs_crumb_diag()：面包屑失败原因码（host 未就绪/列表接管/TUR/GPT/无 userdata/写失败 rc）
+- fdw 修复：fdt_chosen_str 曾覆盖 fdt_chosen_u64 导致 CI 链接失败，已恢复双函数；stage ASCII 96→128
+- TEST-NO-PC.txt dd 提取改为 tail -c 4198400（真机实测 TWRP 下 blockdev 负数）；新增 docs/TEST-NO-PC-DIAG3.txt
+- 交付 raphael-diag-round3.zip（diag4 v1+v2 + 指南）
+
+Stage Summary:
+- 三条零依赖证据链（秒表解码/devmem DDR 记录/闪存面包屑+故障码）+ USB 判别法就绪
+- 等用户回传：crumb.bin（wc=4096）、diag4 掐表结果、devmem 四值、fastboot devices 判别输出
