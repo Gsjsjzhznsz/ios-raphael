@@ -1,0 +1,133 @@
+================================================================
+ios-sweet · Redmi K20 Pro（raphael）无电脑测试指南
+        手机对手机 fastboot boot（OTG + Termux）
+版本 2026-10-19 · 配套镜像：shim-boot-raphael-safe.img（首选）、
+                  shim-boot-raphael.img（8 核版）
+================================================================
+
+【开始前必读】
+1. 本测试 = fastboot boot 临时引导：镜像只进内存、不刷写任何分区，
+   重启即恢复原状，对 K20 Pro 上的 Android 数据无影响。
+2. 会清数据的只有 fastboot flash userdata（刷 iOS rootfs，后续阶段）。
+   本指南的全部步骤都不碰 userdata。
+3. 硬门槛：K20 Pro 必须【已解锁 BL】。进 fastboot 后屏幕上有
+   unlocked 状态，未解锁的话 fastboot boot 会报 not allowed。
+   （小米解锁需要 Windows 电脑跑 Mi Unlock 工具，无电脑基本无法
+   解锁——请先确认你已解锁。）
+
+【你需要的东西】
+- K20 Pro（被测机，BL 已解锁）
+- 另一台安卓手机（主机，装 Termux，支持 OTG）
+- OTG 转接头 / OTG 线
+- 两台手机电量 50% 以上
+- 本包内两个 .img 文件
+
+【文件说明】
+- shim-boot-raphael-safe.img —— 首选：cpus=1 单核 + 屏幕控制台
+  常显 + 不碰 USB，首测最大概率看到完整启动日志。
+- shim-boot-raphael.img —— 8 核完整版（第二阶段用；没有 rootfs 时
+  屏幕表现与 safe 版相同）。
+两个内核相同（含 0085 音量上键 / 0086 ST FTS 二供 / 0087 USB）。
+
+--------------------------------------------------
+第一步：主机安装 Termux + fastboot
+--------------------------------------------------
+1. Termux 不要用 Google Play 版（已废弃）。二选一安装 APK：
+   - F-Droid  https://f-droid.org/packages/com.termux/
+   - GitHub   https://github.com/termux/termux-app/releases
+2. 打开 Termux 依次执行（注意联网）：
+      pkg update -y
+      pkg install -y android-tools
+      termux-setup-storage        # 弹出存储权限，点允许
+3. 验证：输入 fastboot --version 有版本输出即成功。
+
+--------------------------------------------------
+第二步：把镜像放进主机
+--------------------------------------------------
+用 ZArchiver 等解压 zip 到手机存储（例如 Download/），
+或让发送方把 .img 单独发你、直接保存到下载目录。
+
+--------------------------------------------------
+第三步：K20 Pro 进入 fastboot 模式
+--------------------------------------------------
+关机 → 同时按住【电源 + 音量下】→ 出现橙色 fastboot 界面。
+顺便记下屏幕上的 unlocked 状态。
+
+--------------------------------------------------
+第四步：OTG 连接，boot 测试
+--------------------------------------------------
+1. OTG 线连接两台手机（K20 Pro 是被测端）。
+2. 主机 Termux：
+      cd /sdcard/Download            # img 所在目录
+      fastboot devices
+   应显示"设备号  fastboot"。首次会弹"允许 Termux 访问该 USB 设备？"
+   ——点允许（重插线后会再弹一次，同样允许）。
+3. 执行（用 safe 版）：
+      fastboot boot shim-boot-raphael-safe.img
+4. 主机显示 OKAY / Booting...，K20 Pro 自动从内存启动。
+
+【预期现象（safe 版，按时间顺序）】
+- K20 Pro 屏幕立刻点亮：出现等宽字体内核控制台（shim 输出）
+- 滚动：内存/MMU 设置 → GIC 探测 → PSCI 版本 → XNU 启动
+- 随后大量内核日志（IOKit 探测，很多 SWEET 开头的行）
+- 因为没有刷 iOS rootfs，最终会停在挂载根文件系统失败或 panic
+  ——【这是预期结果，不是失败】——到此已验证 CPU/GIC/帧缓冲/
+  持久日志写入链路全部正常。
+- 全程不动手机数据；长按电源约 10 秒强制重启即回 Android
+  （fastboot 下 = 电源+音量下）。
+
+【拍照留证（重要）】
+屏幕 1080x2340，拍照放大应可读。至少拍：
+  ① 开机前 10 秒的滚动内容
+  ② 停止/卡死处最后 20 行
+直接把照片发给我即可继续分析。
+
+--------------------------------------------------
+第五步（强烈建议）：提取持久内核日志
+--------------------------------------------------
+内核会同时把控制台写进 userdata 末尾 4MiB 日志环；从 recovery 读出
+来发给我，比照片完整得多，可以直接定位卡死点。
+1. 主机浏览器下载 OrangeFox（K20 Pro 官方支持）：
+      https://orangefox.download/zh_CN/device/raphael
+   下载 zip 后用 ZArchiver 解压出 recovery.img。
+2. K20 Pro 回 fastboot，主机执行：
+      fastboot boot recovery.img      （同样是临时引导，不刷分区）
+3. OrangeFox 菜单 → Terminal（终端），粘贴下面整行并回车：
+   dev=/dev/block/by-name/userdata; [ -e $dev ] || dev=/dev/block/bootdevice/by-name/userdata; b=$(blockdev --getsize64 $dev); dd if=$dev bs=4096 skip=$((b/4096-1025)) count=1025 of=/sdcard/sweet-log.bin && echo LOG-OK
+4. 重启 K20 Pro 回 Android，把 /sdcard/sweet-log.bin（约 4MB）用
+   微信/QQ/网盘任意方式发给我。
+   备选：主机 Termux 里也可以 adb 直接拉——K20 Pro 进 OrangeFox 后
+   插 OTG，主机执行 adb devices → adb shell（粘贴上面同一行）→
+   adb pull /sdcard/sweet-log.bin。
+
+--------------------------------------------------
+结果自查（发我之前）
+--------------------------------------------------
+□ fastboot devices 能看到设备（记下报错与否）
+□ boot 后屏幕是否亮、控制台出现几行（拍照）
+□ 卡死/panic 的最后一行内容（拍照）
+□ sweet-log.bin 是否提取成功
+以上任何一项的结果都有价值——"黑屏无反应"也要说明主机端
+fastboot 是否显示 Booting OK。
+
+--------------------------------------------------
+常见问题
+--------------------------------------------------
+- fastboot devices 无输出：换 OTG 线/转接头；MIUI 主机到
+  设置-更多设置里打开"OTG"开关；重插并留意 USB 授权弹窗；
+  K20 Pro 重进 fastboot；换个 USB 口方向重试。
+- Booting 报 not allowed / failed：BL 未解锁（见硬门槛）。
+- 屏幕黑但主机显示 Booting OK：等 2 分钟，长按电源重启，然后
+  走第五步提日志（屏幕没亮不代表日志没写）。
+- 主机弹"USB 设备已连接"系统窗：忽略/取消，不要点文件传输。
+- 刷机中途两台手机任一没电：先充满再做。
+
+--------------------------------------------------
+风险边界
+--------------------------------------------------
+- fastboot boot / OrangeFox 临时引导 = 不写任何分区，随时可强重启。
+- 绝对不要执行 fastboot flash / erase 任何东西。
+- 后续 iOS rootfs 阶段（flash userdata）才会清数据，且 16GB 镜像
+  需在 Linux 构建——到时我会给无电脑替代方案（云服务器代跑），
+  现在不用管。
+================================================================

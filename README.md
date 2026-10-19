@@ -56,6 +56,8 @@ ABL（原装小米 bootloader，已解锁）
 
 前置：Redmi K20 Pro（任意版本，**已解锁 bootloader**）、Linux PC（`adb`/`fastboot`、`python3`）、GitHub 账号（fork 本仓库以获得免费的 macOS CI 分钟数）。
 
+**没有电脑？** 可以用另一台安卓手机 + OTG 线 + Termux 当 fastboot 主机完成同样的测试，逐步指南见 **[docs/TEST-NO-PC.txt](docs/TEST-NO-PC.txt)**（手机对手机 fastboot boot / OrangeFox 提日志，全程不刷分区）。
+
 **0. 先备份。** 临时引导 OrangeFox（或任意带 adb root 的 recovery），至少拉取 `persist`、`modemst1`、`modemst2`、`fsg`、`fsc`、`boot`、`dtbo`、`vbmeta`。shim 需要你原厂 boot.img 里的 SoC DTB：
 
 ```sh
@@ -234,6 +236,8 @@ No serial port (the debug UART is wired as SPI on this board). Three log channel
 ### Testing on the device
 
 Prerequisites: a Redmi K20 Pro (any variant, **unlocked bootloader**), a Linux PC (`adb`/`fastboot`, `python3`), a GitHub account (fork this repo for free macOS CI minutes).
+
+**No PC?** Use another Android phone + an OTG cable + Termux as the fastboot host — step-by-step guide in **[docs/TEST-NO-PC.txt](docs/TEST-NO-PC.txt)** (phone-to-phone `fastboot boot` / OrangeFox log extraction; nothing is flashed).
 
 **0. Back up first.** Temporarily boot OrangeFox and pull at least `persist`, `modemst1`, `modemst2`, `fsg`, `fsc`, `boot`, `dtbo`, `vbmeta`. The shim needs the SoC DTB from your stock boot.img:
 

@@ -113,3 +113,22 @@ Work Log:
 Stage Summary:
 - 仓库文档层已完全定位为 raphael/855 项目；README 双语、中文默认
 - 待办不变：真机 fastboot boot 冒烟测试（cpus=1 起步）
+
+---
+Task ID: 6
+Agent: Super Z (main agent)
+Task: 无电脑（手机对手机）测试方案：cpus=1 保守镜像 + 零 PC 逐步指南 + 交付 zip
+
+Work Log:
+- 用户环境确认：完全没有电脑，仅有另一台可做 fastboot 主机的安卓手机
+- 本地重打包 shim-boot-raphael-safe.img（scripts/repack-raphael-safe.sh）：同一内核（fecc50a，含 0085-0087）+ 同一 ADT，cmdline 改为 cpus=1、去掉 sweetfb_noconsole/sweetfb_hz（屏幕控制台常显）、不启用 sweetusb —— 首测最大可见性
+- 结构校验：ANDROID! header v1、ramdisk == payload cmp 一致、payload cmdline 复核（cpus=1，无 fb mute）
+- 交付 zip：raphael-p2p-test.zip（12MB）= safe 版 + 8 核版 + 测试指南 txt
+- 撰写 docs/TEST-NO-PC.txt（零 PC 指南）：Termux(F-Droid/GitHub) + android-tools + OTG fastboot boot 流程、预期现象与拍照留证、OrangeFox 终端一行 dd 提取 userdata 末尾 4MiB 日志环（备选 Termux adb pull）、结果自查清单、常见问题（OTG 不识别/未解锁 not allowed/黑屏但 Booting OK）、风险边界（boot 不刷分区）
+- README.md 中英两区增加"没有电脑？"入口链接 docs/TEST-NO-PC.txt
+- 交付物（/home/z/my-project/download/）：shim-boot-raphael-safe.img、raphael-p2p-test.zip、无电脑测试指南-手机对手机.txt
+
+Stage Summary:
+- 用户可全程无电脑完成冒烟测试：手机 A(Termux) --OTG--> K20 Pro fastboot boot
+- 硬门槛已在指南标注：K20 Pro 必须 BL 已解锁（小米解锁依赖 Windows 工具）
+- 等待用户回传：屏幕照片 / sweet-log.bin；后续 rootfs 阶段拟用云 Linux 服务器代跑 mkiosroot
