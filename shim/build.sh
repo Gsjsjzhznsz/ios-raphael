@@ -32,8 +32,15 @@ fi
 if [ "${RAPHAEL:-0}" = 1 ]; then
         # Redmi K20 Pro stock flow: boot header v1, DTB appended to the kernel
         # blob (Image.gz-dtb style). Extract a SoC DTB from the stock boot.img
-        # (tools/raphael-dtb-extract.py) and point DTB_IN at it.
+        # (tools/raphael-dtb-extract.py) and point DTB_IN at it. Without a DTB
+        # (CI shim-only builds) only out/Image is produced; package it with
+        # tools/package-raphael.py.
         DTB_IN=${DTB_IN:-../dtb/boot_unpacked/raphael_0.dtb}
+        if [ ! -f "$DTB_IN" ]; then
+                echo "shim: no DTB_IN ($DTB_IN); built out/Image only (package with tools/package-raphael.py)"
+                ls -l out/Image out/shim.elf
+                exit 0
+        fi
         cat out/Image "$DTB_IN" > out/Image.dtb
         python3 ../tools/mkbootimg.py --header_version 1 --kernel out/Image.dtb --ramdisk out/ramdisk.bin \
                 --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
