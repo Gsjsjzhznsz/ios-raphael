@@ -298,6 +298,7 @@ static struct crumb_blk {
 static uint32_t crumb_lba;
 static int crumb_ready = -1;    /* -1 untried, 0 broken, 1 ok */
 static volatile int crumb_busy;
+static uint32_t crumb_diag;     /* see ufs.h for the encoding */
 
 static int crumb_init(void)
 {
@@ -305,8 +306,10 @@ static int crumb_init(void)
         const uint8_t *gpt;
         static uint8_t ents[128 * 128] __attribute__((aligned(4096)));
 
-        if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY) || ufs_rd(REG_UTRLDBR))
+        if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY) || ufs_rd(REG_UTRLDBR)) {
+                crumb_diag = 1;         /* ABL left the host in another state */
                 return 0;
+        }
         /* Take over the transfer request list, exactly like test_ufs(). */
         ufs_wr(REG_UTRLRSR, 0);
         uintptr_t list = (uintptr_t)utrl;
@@ -314,26 +317,36 @@ static int crumb_init(void)
         ufs_wr(REG_UTRLBAU, (uint32_t)(list >> 32));
         ufs_wr(REG_UTRLRSR, 1);
         if (ufs_rd(REG_UTRLBA) != (uint32_t)list || ufs_rd(REG_UTRLBAU) != (uint32_t)(list >> 32) ||
-            !(ufs_rd(REG_UTRLRSR) & 1))
+            !(ufs_rd(REG_UTRLRSR) & 1)) {
+                crumb_diag = 2;
                 return 0;
+        }
 
         static const uint8_t tur[6] = { 0 };
         for (int i = 0; i < 3 && rc; i++)
                 rc = scsi(0, tur, sizeof(tur), 0, 0, 0, &ocs, &st);
-        if (rc)
+        if (rc) {
+                crumb_diag = 3;
                 return 0;
+        }
 
         /* GPT: the last LBA of the userdata partition. */
-        if (read_blocks(0, 2, data))
+        if (read_blocks(0, 2, data)) {
+                crumb_diag = 4;
                 return 0;
+        }
         gpt = data + BLOCK;
         uint32_t nent = gpt[80] | gpt[81] << 8 | gpt[82] << 16, esz = gpt[84] | gpt[85] << 8;
         uint32_t elba = gpt[72] | gpt[73] << 8;
-        if (esz != 128 || nent > 128)
+        if (esz != 128 || nent > 128) {
+                crumb_diag = 5;
                 return 0;
+        }
         uint32_t blocks = (nent * 128 + BLOCK - 1) / BLOCK;
-        if (read_blocks(elba, blocks, ents))
+        if (read_blocks(elba, blocks, ents)) {
+                crumb_diag = 6;
                 return 0;
+        }
         int found = 0;
         uint64_t last = 0;
         for (uint32_t i = 0; i < nent; i++) {
@@ -351,8 +364,14 @@ static int crumb_init(void)
                         found = 1;
                 }
         }
-        if (!found || last > 0xffffffffULL)
+        if (!found) {
+                crumb_diag = 7;
                 return 0;
+        }
+        if (last > 0xffffffffULL) {
+                crumb_diag = 8;
+                return 0;
+        }
         crumb_lba = (uint32_t)last;
 
         /* Fresh block for this boot if the magic is not ours. */
@@ -364,7 +383,13 @@ static int crumb_init(void)
                 crumb->version = 1;
                 crumb->count = 0;
         }
+        crumb_diag |= 1u << 16;         /* init passed; bits 8-15 report write fails */
         return 1;
+}
+
+uint32_t ufs_crumb_diag(void)
+{
+        return crumb_diag;
 }
 
 void ufs_crumb(const char *tag, uint64_t a, uint64_t b, uint64_t c, uint64_t d)
@@ -380,7 +405,10 @@ void ufs_crumb(const char *tag, uint64_t a, uint64_t b, uint64_t c, uint64_t d)
                         r->tag[i] = tag[i];
                 r->t = ticks();
                 r->a = a; r->b = b; r->c = c; r->d = d;
-                write_blocks(crumb_lba, 1, crumb_buf);          /* best effort */
+                uint32_t rc = write_blocks(crumb_lba, 1, crumb_buf);
+                if (rc)         /* best effort, but remember why it failed */
+                        crumb_diag = (crumb_diag & ~(0xffu << 8)) |
+                                     ((0x10u | (rc & 0xf)) << 8);
         }
         crumb_busy = 0;
 }

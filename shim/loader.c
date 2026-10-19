@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include "console.h"
 #include "fdt.h"
+#include "diag.h"
 #include "loader.h"
 #include "ufs.h"
 
@@ -87,6 +88,7 @@ const char *loader_boot(uintptr_t dtb)
         con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
         ufs_crumb("DTB", dtb, rd_start, rd_end,
                   __builtin_bswap32(*(volatile uint32_t *)dtb));
+        stage_diag_mark(2);
 
         const struct payload *p = (const struct payload *)rd_start;
         if (!magic_ok(p->magic))
@@ -94,6 +96,12 @@ const char *loader_boot(uintptr_t dtb)
         if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
                 return "bad payload header";
         ufs_crumb("PLD", p->phys_base, p->mem_size, p->entry_va, p->nsegs);
+        stage_diag_mark(3);
+
+        /* Second stage-mode trigger, from the payload command line: reaches
+         * here even when ABL did not put bootargs into /chosen. */
+        if (diag_has_token(p->cmdline, "shimstage=1"))
+                shim_stage_mode = 1;
 
         uint64_t pa_of_va_base = p->phys_base - p->virt_base;   /* pa = va + this */
         con_hex2("PHYS", "base=", p->phys_base, "size=", p->mem_size);
@@ -114,6 +122,7 @@ const char *loader_boot(uintptr_t dtb)
         con_hex2("SEGS", "n=", p->nsegs, "end=", p->kernel_end + pa_of_va_base);
         ufs_crumb("SEG", p->nsegs, (uint32_t)(p->kernel_end + pa_of_va_base),
                   (uint32_t)rd_end, 0);
+        stage_diag_mark(4);
 
         /* ADT, then boot_args, behind the kernel; everything below topOfKernelData is ours. */
         uintptr_t adt_pa = p->kernel_end + pa_of_va_base;
@@ -141,11 +150,17 @@ const char *loader_boot(uintptr_t dtb)
                 ba->CommandLine[i] = p->cmdline[i];
         ba->memSizeActual = p->mem_size;
         con_hex2("BOOTARG", "pa=", ba_pa, "top=", top);
+        stage_diag_mark(5);
 
         uintptr_t entry_pa = p->entry_va + pa_of_va_base;
         con_hex("JUMP", entry_pa);
         con_str("XNU", "jumping (fbcon clears screen)");
         ufs_crumb("JUMP", entry_pa, ba_pa, adt_pa, p->adt_size);
+        stage_diag_mark(6);
+
+        /* Stage-diag boots stop here: the timed reboot IS the report. */
+        if (shim_stage_mode)
+                stage_diag_final();
 
         /* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
         __asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");

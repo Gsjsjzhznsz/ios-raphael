@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include "console.h"
 #include "mmu.h"
+#include "fdt.h"
+#include "diag.h"
 #include "loader.h"
 #include "ufs.h"
 
@@ -115,7 +117,7 @@ static void delay_ms(unsigned ms)
 static void __attribute__((noreturn)) reset(unsigned after_s)
 {
         con_skip();
-        con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
+        con_str("RESET", "now");
         delay_ms(after_s * 1000);
         wr32(USE_IMEM_RESTART_REASON, RESTART_BOOTLOADER);
         __asm__ volatile("dsb sy" ::: "memory");
@@ -124,6 +126,121 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
         for (;;)
                 __asm__ volatile("wfe");
 }
+
+/* ---- stage diagnostics (see diag.h) ---- */
+
+int shim_stage_mode;
+static unsigned stage_diag_stage;       /* furthest stage reached (shared) */
+
+#ifdef RAPHAEL
+/* Stock raphael DTS reserves ramoops@a1600000 size 0x800000 (dmesg 8*0x80000
+ * + console 0x400000 + pmsg 0x400000 = 0xc00000 > 0x800000), so pstore never
+ * binds the region and nothing in any recovery zaps it. The record rides at
+ * the very end of the region, with a second copy past the first dmesg
+ * record's header. DDR survives PSHOLD/PSCI warm resets; read it with
+ * toybox devmem from a recovery shell. */
+#define STAGE_DIAG_HI   0xa1dff000UL
+#define STAGE_DIAG_LO   0xa1601000UL
+#define STG_MAGIC       0x44475453UL    /* 'STGD' */
+
+static void stg_wr(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
+static void stg_wr64(uintptr_t a, uint64_t v) { *(volatile uint64_t *)a = v; }
+
+static void stg_hex(char **p, uint64_t v)
+{
+        static const char d[] = "0123456789abcdef";
+        for (int i = 15; i >= 0; i--)
+                *(*p)++ = d[(v >> (4 * i)) & 0xf];
+}
+
+static void stg_record(uintptr_t base, unsigned code, uint64_t esr, uint64_t elr, uint64_t far)
+{
+        uint32_t cd = ufs_crumb_diag();
+        char ascii[96];
+        char *p = ascii;
+
+        stg_wr(base + 0x00, STG_MAGIC);
+        stg_wr(base + 0x04, 2u << 24 | code);           /* version 2, stage code */
+        stg_wr(base + 0x08, cd);
+        stg_wr(base + 0x0c, (uint32_t)shim_stage_mode);
+        stg_wr64(base + 0x10, esr);
+        stg_wr64(base + 0x18, elr);
+        stg_wr64(base + 0x20, far);
+
+        for (int i = 0; i < 8; i++)
+                *p++ = "STGDIAG2"[i];
+        *p++ = ' ';
+        stg_hex(&p, (uint64_t)code);
+        *p++ = ' ';
+        stg_hex(&p, cd);
+        *p++ = ' ';
+        stg_hex(&p, (uint64_t)shim_stage_mode);
+        *p++ = ' ';
+        stg_hex(&p, esr);
+        *p++ = ' ';
+        stg_hex(&p, elr);
+        *p++ = ' ';
+        stg_hex(&p, far);
+        *p++ = 0;
+        for (unsigned i = 0; i + 1 < sizeof(ascii) && ascii[i]; i++)
+                *(volatile char *)(base + 0x40 + i) = ascii[i];
+        *(volatile char *)(base + 0x40 + sizeof(ascii) - 1) = 0;
+        __asm__ volatile("dsb sy" ::: "memory");
+}
+
+void stage_diag_mark(unsigned code)
+{
+        if (code < stage_diag_stage)
+                code = stage_diag_stage;
+        stage_diag_stage = code;
+        stg_record(STAGE_DIAG_HI, code, 0, 0, 0);
+        stg_record(STAGE_DIAG_LO, code, 0, 0, 0);
+}
+
+void stage_diag_final(void)
+{
+        /* 20 + 20*stage seconds: stage 6 (ready to jump) -> 140 s.
+         * Distinct from the ~40 s exception reset and the ~200 s loader
+         * error path; a hang never resets at all. */
+        reset(20 + 20 * (stage_diag_stage ? stage_diag_stage : 6));
+}
+
+static void stage_diag_exc(unsigned code, uint64_t esr, uint64_t elr, uint64_t far)
+{
+        stg_record(STAGE_DIAG_HI, 0xf0u | (code & 0xf), esr, elr, far);
+        stg_record(STAGE_DIAG_LO, 0xf0u | (code & 0xf), esr, elr, far);
+}
+
+/* shimstage=1 in the DTB /chosen command line enables stage mode before
+ * the payload is even looked at. The buffer is static: ABL can prepend a
+ * long androidboot list before our token. */
+static void stage_diag_detect(uintptr_t dtb)
+{
+        static char buf[512];
+        if ((fdt_chosen_str(dtb, "bootargs", buf, sizeof(buf)) ||
+             fdt_chosen_str(dtb, "commandline", buf, sizeof(buf))) &&
+            diag_has_token(buf, "shimstage=1"))
+                shim_stage_mode = 1;
+}
+#else
+void stage_diag_mark(unsigned code)
+{
+        (void)code;
+}
+void stage_diag_final(void)
+{
+        for (;;)
+                ;
+}
+static void stage_diag_exc(unsigned code, uint64_t esr, uint64_t elr, uint64_t far)
+{
+        (void)code; (void)esr; (void)elr; (void)far;
+}
+static void stage_diag_detect(uintptr_t dtb)
+{
+        (void)dtb;
+}
+#endif
 
 /* ---- exceptions ---- */
 
@@ -156,6 +273,7 @@ void exc_handler(uint64_t slot, uint64_t *regs)
         /* Record the fault before touching the framebuffer: the flash crumb
          * is the only evidence channel when the panel stays dark. */
         ufs_crumb("EXC", slot, rsr("esr_el1"), rsr("elr_el1"), rsr("far_el1"));
+        stage_diag_exc((unsigned)slot, rsr("esr_el1"), rsr("elr_el1"), rsr("far_el1"));
         con_clear(BLUE);
         switch (slot & 3) {
         case 0: con_str("PANIC", "SYNC"); break;
@@ -388,8 +506,14 @@ void shim_main(uint64_t dtb)
 {
         struct mmu_info mi;
 
+        /* Stage mode is opt-in via the DTB command line; the payload command
+         * line is checked later in the loader (works even if ABL did not
+         * forward bootargs into /chosen). */
+        stage_diag_detect(dtb);
+
         /* First breadcrumb: proves ABL actually jumped into us. */
         ufs_crumb("MAIN", dtb, 0, 0, 0);
+        stage_diag_mark(1);
 
         /* An xnu payload in the ramdisk means: boot it (MMU stays off). */
         stage = "loader";
