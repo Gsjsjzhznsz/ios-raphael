@@ -12,10 +12,10 @@ Inputs (download from the fork's Actions artifacts):
 """
 import os, struct, subprocess, sys, tempfile
 
-MKBOOTIMG_ARGS = dict(base=0, kernel_offset=0x8000, ramdisk_offset=0x1000000,
-                      tags_offset=0x100, pagesize=4096,
-                      os_version="11.0.0", os_patch_level="2021-10",
-                      cmdline="console=null")
+MKBOOTIMG_ARGS = {"--base": 0, "--kernel_offset": 0x8000, "--ramdisk_offset": 0x1000000,
+                  "--tags_offset": 0x100, "--pagesize": 4096,
+                  "--os_version": "11.0.0", "--os_patch_level": "2021-10",
+                  "--cmdline": "console=null"}
 
 
 def find_dtbs(data):
