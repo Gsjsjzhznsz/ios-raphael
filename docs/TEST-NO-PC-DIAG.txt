@@ -1,0 +1,73 @@
+================================================================
+ios-sweet · raphael 无电脑测试【第二轮：黑屏诊断】
+配套镜像：shim-boot-raphael-diag.img（v1，首选）
+          shim-boot-raphael-diag-v2.img（v2，v1 被拒时用）
+================================================================
+
+【第一轮结果回顾】
+safe 版黑屏 + 你提取的 4MiB 里没有内核日志（连日志头都没有）。
+已给 shim 加"闪存面包屑"：shim 每走一步就往 userdata 最后 4KiB 写一条
+记录（MAIN→DTB→PLD→SEG→JUMP），发生异常则连 ESR/ELR/FAR 寄存器一起
+写入（EXC）。屏幕全黑也能从 recovery 读出它到底死在哪一步。
+诊断镜像同时开启了 USB（sweetusb=2）：内核若跑到 USB 初始化，主机手机
+能直接看到 USB 设备枚举——这是"内核活着"的硬信号。
+
+--------------------------------------------------
+A. 先补证据（2 分钟，recovery 终端，不做 B 也请做这步）
+--------------------------------------------------
+1) 核实分区（上一轮用的 sda31 需要对照）：
+      ls -l /dev/block/by-name/userdata
+   记下它实际指向哪个 sdaXX（拍照发我）。
+2) 连头带环完整拉取（比上一轮多 4KiB——那个 4KiB 是日志头块，
+   有它才能判断内核是否初始化过日志系统）：
+      tail -c 4198400 /dev/block/by-name/userdata > /sdcard/sweet-full.bin
+   把 sweet-full.bin 发给开发者。
+
+--------------------------------------------------
+B. 引导诊断镜像
+--------------------------------------------------
+      fastboot boot shim-boot-raphael-diag.img
+- 若主机报错/无 Booting OKAY → 改试 shim-boot-raphael-diag-v2.img
+- 黑屏是预期内的，这个镜像的价值在闪存里
+- 引导后至少等 60 秒再重启（给面包屑留写入时间）
+
+--------------------------------------------------
+C. 可选：内核存活信号（Termux，不用屏幕）
+--------------------------------------------------
+boot 后 1 分钟内，在主机手机 Termux 执行：
+      ls /sys/bus/usb/devices
+      # 若出现 1-1 之类设备：
+      cat /sys/bus/usb/devices/1-1/idVendor
+      cat /sys/bus/usb/devices/1-1/product
+   idVendor = 1209 且 product = "Sweet iOS (USB bring-up)"
+   ⇒ 内核已跑到 USB 初始化（重大进展，直接告诉我）。
+
+--------------------------------------------------
+D. 收面包屑（核心步骤）
+--------------------------------------------------
+长按电源重启 → 回 recovery 终端：
+      tail -c 4096 /dev/block/by-name/userdata > /sdcard/crumb.bin
+      strings /sdcard/crumb.bin
+      # 现场应看到：SHIMCRMB 和若干记录
+把 crumb.bin 发给开发者。记录含义：
+   MAIN  = ABL 确实跳进了 shim（没有它 = ABL 没交控制权）
+   DTB   = x0/FDT 有效，a=DTB 指针 d=FDT 魔数(应为 d00dfeed)
+   PLD   = payload 头合法（a=物理基址）
+   SEG   = 内核段拷贝完成
+   JUMP  = 已跳入 XNU（a=入口物理地址）
+   EXC   = shim 异常！a=slot b=ESR c=ELR d=FAR（贴给我即可定位）
+判读速查：
+   一条面包屑都没有 ⇒ ABL 没把控制权交给 shim（或 shim 在第一条
+      指令前就死了）→ 用 v2 镜像再试一轮，结果告诉我
+   到 DTB 为止       ⇒ ABL 传的 FDT 有问题（我们换用自带 DTB）
+   到 JUMP 为止      ⇒ 内核极早期崩溃 → 看内核日志头（步骤 A 的
+      sweet-full.bin 里 SWEETLOG 头是否出现/total 是否 >0）
+
+--------------------------------------------------
+E. 收尾
+--------------------------------------------------
+无论结果如何，把这三样发给开发者：
+   ① sweet-full.bin（步骤 A）
+   ② crumb.bin（步骤 D）
+   ③ USB 枚举结果 / 屏幕照片（如有）
+================================================================

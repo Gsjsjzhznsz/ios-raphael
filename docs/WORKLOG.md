@@ -132,3 +132,21 @@ Stage Summary:
 - 用户可全程无电脑完成冒烟测试：手机 A(Termux) --OTG--> K20 Pro fastboot boot
 - 硬门槛已在指南标注：K20 Pro 必须 BL 已解锁（小米解锁依赖 Windows 工具）
 - 等待用户回传：屏幕照片 / sweet-log.bin；后续 rootfs 阶段拟用云 Linux 服务器代跑 mkiosroot
+
+---
+Task ID: 7
+Agent: Super Z (main agent)
+Task: 首轮真机测试结果分析（黑屏+日志空）→ 闪存面包屑诊断镜像（v1+v2）
+
+Work Log:
+- 用户回传：fastboot boot OKAY（主机手机 OTG 成功），K20 Pro 全程黑屏无背光，无自动重启；tail -c 4194304 sda31 提取 4MiB
+- 日志分析（scripts/analyze-sweetlog.py + decode-log.py）：4MiB 内零 SWEETLOG 头、零 SWEET/Darwin/panic 标记，前 2.1MiB 可打印率 37%（Android 遗留 FS 数据），0x205000 后全零 ⇒ 本次启动未写过任何内核日志；且用户 tail 少了日志头块（区域=[头 4K][环 4M]），sda31=userdata 待 by-name 核实
+- 证据推理：shim 首屏动作是 con_clear(RED)（红屏）；异常路径会画蓝屏并 40s 自动重启，用户需长按电源 ⇒ 极早期崩溃（ABLL未交控制权/shim 首 C 调用前）或面板在 ABL 交接时被关闭，证据不足
+- shim 面包屑实现（013048e）：ufs.c SCSI 增加方向参数+WRITE(10)；ufs_crumb() 把阶段记录写到 userdata 最后 4KiB（MMU off、Device 内存、复用 test_ufs 的 UTRL 接管流程+GPT 找 userdata 尾块）；shim_main 入口 MAIN、exc_handler EXC(slot/ESR/ELR/FAR)、loader DTB/PLD/SEG/JUMP；SWEET 构建 no-op 不受影响
+- CI 异常排队 30+ 分钟后首个 run 39279520451 成功（GCC 15.2），artifact Image 200,704 字节；本地工具链方案（xpack/deb）备而未用
+- 打包：payload-raphael-diag.bin（cmdline=safe 版+sweetusb=2）；shim-boot-raphael-diag.img（header v1）+ shim-boot-raphael-diag-v2.img（header v2 兜底实验，DTB 独立段）；双双 ANDROID! 头校验
+- 交付：raphael-diag-round2.zip（12MB，双镜像+第二轮指南）；docs/TEST-NO-PC-DIAG.txt（补拉日志头/USB 枚举 sysfs 检查/面包屑判读表）
+
+Stage Summary:
+- 第二轮测试三证据通道：闪存面包屑（核心）+ sweet-full.bin 日志头 + 主机 sysfs USB 枚举
+- 等待用户回传 crumb.bin / sweet-full.bin；JUMP 后无内核日志 ⇒ 内核极早期问题，有 EXC ⇒ shim 可定位
