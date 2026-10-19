@@ -133,7 +133,7 @@ index 0000000..0d93890
 +options   CONFIG_RESLIDE_SHARED_CACHE		# <reslide_shared_cache>
 +options   CONFIG_KERNEL_TBI		# <kernel_tbi>
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
-index 9a748ea..377ee80 100644
+index 9a748ea..d385c42 100644
 --- a/makedefs/MakeInc.def
 +++ b/makedefs/MakeInc.def
 @@ -29,7 +29,7 @@ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
@@ -149,7 +149,7 @@ index 9a748ea..377ee80 100644
  MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
  MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
  MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8.2-a+crypto
-+MACHINE_FLAGS_ARM64_RAPHAEL = -DARM64_BOARD_CONFIG_RAPHAEL            -march=armv8.2-a+crypto
++MACHINE_FLAGS_ARM64_RAPHAEL = -DARM64_BOARD_CONFIG_RAPHAEL -DARM64_BOARD_CONFIG_SWEET -march=armv8.2-a+crypto
  
  
  #
