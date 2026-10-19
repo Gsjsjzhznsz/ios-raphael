@@ -75,3 +75,20 @@ Stage Summary:
 - 三个移植缺口全部关闭（音量上键/触摸二供/USB 日志通道），补丁已验证可干净重放
 - 文档三件套与资源链接更新完毕，rme：mainline 化的硬件事实表可直接支撑后续真机调试
 - 下一步：push → CI 重建 RAPHAEL 内核 → 重打包 shim-boot-raphael.img → 用户真机测试
+
+---
+Task ID: 4
+Agent: Super Z (main agent)
+Task: CI 重建 RAPHAEL 内核（fecc50a）并重打包首测镜像，交付物刷新，worklog 入库
+
+Work Log:
+- 推送 raphael 分支（fecc50a）→ 触发 xnu workflow（machine_config=RAPHAEL, run 39268242631），~9 分钟构建 SUCCESS，head_sha 确认为 fecc50a
+- 下载产物 kernel.development.raphael（17,206,056 字节 Mach-O arm64）
+- 本地重打包：mkadt --raphael --highmem → mkpayload（cmdline 与上轮一致）→ package-raphael.py（stock boot.img 提取 SM8150 v2 DTB，header v1）
+- 结构校验：ANDROID! v1 头、kernel blob 末尾 DTB magic 0xd00dfeed、SWEETXNU payload 在位
+- 交付物刷新（/home/z/my-project/download/）：shim-boot-raphael.img (17,301,504)、payload-raphael.bin、sweet-raphael.adt、kernel.development.raphael、README-RAPHAEL-TEST.txt（含 sweetusb=2 直播日志指引，已修正过时的"已知限制"段）
+- worklog 同步 docs/WORKLOG.md 并推送仓库
+
+Stage Summary:
+- 含 0085-0087 的首测镜像就绪：真机 fastboot boot 即可验证音量上键/触摸二供/USB 直播日志三条新链路
+- 验证顺序建议：sweetusb=1 看时钟/GDSC 报告 → sweetusb=2 + sweet-usbnet.sh 直播日志 → cpus=1→8 → rootfs
