@@ -45,7 +45,7 @@ def main():
     with tempfile.NamedTemporaryFile(suffix=".Image.dtb", delete=False) as f:
         f.write(kernel)
         kpath = f.name
-    argv = ["mkbootimg", "--header_version", "1", "--kernel", kpath,
+    argv = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mkbootimg.py"), "--header_version", "1", "--kernel", kpath,
             "--ramdisk", payload, *sum(([k, str(v)] for k, v in MKBOOTIMG_ARGS.items()), []),
             "-o", out]
     subprocess.run(argv, check=True)
