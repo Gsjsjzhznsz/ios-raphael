@@ -132,6 +132,19 @@ index 0000000..0d93890
 +
 +options   CONFIG_RESLIDE_SHARED_CACHE		# <reslide_shared_cache>
 +options   CONFIG_KERNEL_TBI		# <kernel_tbi>
+diff --git a/libkern/conf/Makefile.template b/libkern/conf/Makefile.template
+index aca295c..c59de11 100644
+--- a/libkern/conf/Makefile.template
++++ b/libkern/conf/Makefile.template
+@@ -19,7 +19,7 @@ include $(MakeInc_def)
+ CFLAGS+= -include meta_features.h -DLIBKERN_KERNEL_PRIVATE -DOSALLOCDEBUG=1
+ SFLAGS+= -include meta_features.h
+ 
+-ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)
++ifneq (,$(filter SWEET RAPHAEL,$(CURRENT_MACHINE_CONFIG)))
+ SWEET_AES_ROOT = $(SRCROOT)/libkern/crypto/sweet_bearssl
+ SWEET_AES_INC = -I$(SWEET_AES_ROOT)/inc -I$(SWEET_AES_ROOT)/src
+ sweet_aes.o_INCFLAGS = $(SWEET_AES_INC)
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 index 9a748ea..d385c42 100644
 --- a/makedefs/MakeInc.def
