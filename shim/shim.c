@@ -156,7 +156,7 @@ static void stg_hex(char **p, uint64_t v)
 static void stg_record(uintptr_t base, unsigned code, uint64_t esr, uint64_t elr, uint64_t far)
 {
         uint32_t cd = ufs_crumb_diag();
-        char ascii[96];
+        char ascii[128];        /* "STGDIAG2 " + 6 x (16 hex + 1 sp) + NUL = 112 */
         char *p = ascii;
 
         stg_wr(base + 0x00, STG_MAGIC);
