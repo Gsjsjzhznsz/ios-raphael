@@ -153,6 +153,9 @@ void exc_handler(uint64_t slot, uint64_t *regs)
                 irq_handler();
                 return;
         }
+        /* Record the fault before touching the framebuffer: the flash crumb
+         * is the only evidence channel when the panel stays dark. */
+        ufs_crumb("EXC", slot, rsr("esr_el1"), rsr("elr_el1"), rsr("far_el1"));
         con_clear(BLUE);
         switch (slot & 3) {
         case 0: con_str("PANIC", "SYNC"); break;
@@ -384,6 +387,9 @@ static uint32_t to_us(uint64_t ticks)
 void shim_main(uint64_t dtb)
 {
         struct mmu_info mi;
+
+        /* First breadcrumb: proves ABL actually jumped into us. */
+        ufs_crumb("MAIN", dtb, 0, 0, 0);
 
         /* An xnu payload in the ramdisk means: boot it (MMU stays off). */
         stage = "loader";
