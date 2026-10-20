@@ -111,18 +111,16 @@ jobs:
           mkdir -p m_os m_sysos m_appos
           mount_one() {
             local f="$1" mp="$2"
-            local disk
+            local disk before after mp_found
+            before=$(mount | awk '{print $3}' | sort)
             disk=$(hdiutil attach -readonly -nomount "$f" | grep -o '^/dev/disk[0-9]*' | head -1)
             echo "attached $f -> $disk"
             diskutil mountDisk "$disk" || diskutil mount readOnly "${disk}s1" || true
-            local mp_found=""
-            for s in $(diskutil list "$disk" | grep -oE "$disk"s[0-9]+); do
-              p=$(diskutil info "$s" 2>/dev/null | sed -n 's/^ *Mount Point: *//p' | head -1)
-              if [ -n "$p" ] && [ "$p" != "Not Mounted" ]; then mp_found="$p"; break; fi
-            done
-            [ -n "$mp_found" ] || { echo "::error::$f 挂载失败"; diskutil list "$disk"; exit 1; }
+            after=$(mount | awk '{print $3}' | sort)
+            # 卷可能挂在合成盘上（APFS container diskN -> 卷 diskM+sN），用挂载快照差分找
+            mp_found=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -1)
+            [ -n "$mp_found" ] || { echo "::error::$f 挂载失败"; diskutil list; exit 1; }
             echo "mounted $f at $mp_found"
-            # 供后续步骤引用
             echo "$mp_found" > "$mp.txt"
           }
           OS_D=$(awk -F'\t' '$1=="OS"{print "dmgs/"$2}' dmgs/map.txt)
