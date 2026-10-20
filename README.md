@@ -11,17 +11,20 @@
 - ✅ USB：内核枚举 `1209:0001 Sweet iOS`；看门狗已解除（日志定格不重启）
 - ✅ rootfs 管线：iOS 16.7.16 → 16G HFS+ 镜像（CI 全自动，见 Releases）
 - ✅ **UFS 读路径已实机验证**（社区复现，[Helium-Studio/ios-raphael](https://github.com/Helium-Studio/ios-raphael) 0082d 只读 probe：`BSD root: ufsroot0` + GPT 定位 userdata；F2FS 上 `hfs_mount error=22` 为预期边界）。其 0082e stage2 已刷 boot 分区 + rootfs 刷入 userdata，Apple logo 待回报。
-- 🚧 **cpus=8 版疑似卡在 secondary CPU bring-up**（屏幕停在 `VM bootstrap done` 附近）：我们 ADT 的 `reg=core<<8` 是 SM7150 布局，SM8150 实际 MPIDR 为 1×Prime+3×Gold（Aff1=0）+4×Silver（Aff1=1），Aff1≥2 的核不存在。**已加 cpus=1 安全版（sc），所有实机成功案例均为单核**。
+- ✅ **锁屏点亮（原生 4 系内核栈）**：swap-test t2（我们内核 + 修复 ADT：1 CPU + fbcon 0x9a4000 + /product 嫁接）已在实机进入 iOS 锁屏，用户态服务全面跑通（raphael-swaptest-r11 Release）。
+- 🚧 **HID 外设攻坚中**：触摸/按键无反应的根因已定位 —— t2 cmdline 带 R10 保守开关 `sweetkeys=0 sweettouch=0`，内核轮询驱动从未启动（SWEET HID 注册播报是无条件框架层，无信息量）。内核二进制已内置全套 raphael 输入驱动（Goodix GT9889 @0x5d / SE19、ST FTS 0x49 备用、PM8150 GPIO6 音量+）。**修复版仅改 cmdline（raphael-hid-r12 Release），先刷 debug 后换 clean**。
 
 ## 下载（Releases）
 
 | 文件 | 说明 |
 |---|---|
+| `raphael-hid-debug.img` | **当前首刷推荐**：t2 同款内核/ADT + `sweetkeys=1 sweettouch=1 sweethidtest=15`，屏上实时日志定位 HID 初始化卡点 |
+| `raphael-hid-clean.img` | **确认触摸可用后日常用**：同上 + `sweetfb_noconsole=1 sweetfb_hz=30`（GUI 起后不画字，日志照进持久区） |
+| `raphael-t2-native-fullfix.img` | 锁屏里程碑版（但 keys/touch 关闭，仅供对照） |
+| `raphael-t1/t3/t4-*.img` | R11 交叉定位组（已完成使命） |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷） |
-| `shim-boot-raphael-sc-verbose.img` | **首刷推荐**：cpus=1 安全排障版（屏上日志；关 keys/touch/USB/battery） |
-| `shim-boot-raphael-sc-full.img` | **二刷推荐**：cpus=1 安全生产版（无控制台叠加，sweetlog 持久日志开） |
-| `shim-boot-raphael-full.img` | 旧 8 核版（实验性，见状态页 cpus=8 风险） |
-| `shim-boot-raphael-full-verbose.img` | 旧 8 核排障版（实验性） |
+| `shim-boot-raphael-sc-verbose.img` / `sc-full.img` | 早期单核排障/生产版 |
+| `shim-boot-raphael-full(-verbose).img` | 旧 8 核版（实验性） |
 
 boot 镜像 = diag5 实测内核**原样提取重打包**，仅 cmdline 不同（复验脚本 `tools/repack-boot-v2.py`，内核/ADT/DTB 三段 SHA256 逐字节一致；sc 版 cmdline 对齐社区实机验证过的 stage2 配方）：
 
@@ -30,7 +33,12 @@ sc-full:     b8b3e47ab6907ba666437d94b4a70cbc41f12e8cf7443dd3b294f7ade6c0dd25
 sc-verbose:  6db479ab0c610241ffe5f273aae5cc81863eb8a2bd24896a8d4a913442acc7ab
 full(8核):    a85b9a07813ec143dc0b910a0e73f7e45fe62b0f3405e9aa6cba9a30b0d16ff2
 verbose(8核): 720b903360caace991fd43878a18ab807861fd278b84f82f8d1ca10f578343e4
+t2-native:   1bc5396e04ae29447e1445968d40a72a9a987bdde95fb6f24ce49390738d4748
+hid-debug:   103215da2e6d80f55097523259f609c06bfd52e0fd0ddc323ca09a3c0358daf1
+hid-clean:   0a98df3b1545a1c50dab81ef770f048ea9c0e37d29804f523728e1772fb87b52
 ```
+
+> HID 版与 t2 的差异仅 36/18 字节（608B cmdline 区内）：内核/ADT/DTB/shim 逐字节不变。判读树与日志取证见 Release 内 `FLASH-HID.md`。
 
 ## 📱 K20 Pro 刷入 iOS 极简指南
 
