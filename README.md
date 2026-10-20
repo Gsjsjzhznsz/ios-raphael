@@ -4,7 +4,7 @@
 
 > ⚠️ 【警告】本项目尚未经过全流程实测，仅供极客测试。操作会彻底清空手机数据，严禁在主力机上操作！
 
-**当前状态（2026-10-20）**
+**当前状态（2026-10-21, r15）**
 
 - ✅ XNU 早期引导全链路实机通过：shim → 内核加载 → VM/zone → `bootstrap done`（diag5 定格验证，12/12 shim 服务注册）
 - ✅ 显示：raphael 原生 1080x2340 面板点亮（AppleCLCD，shim 直写 ABL splash 帧缓冲）
@@ -12,13 +12,18 @@
 - ✅ rootfs 管线：iOS 16.7.16 → 16G HFS+ 镜像（CI 全自动，见 Releases）
 - ✅ **UFS 读路径已实机验证**（社区复现，[Helium-Studio/ios-raphael](https://github.com/Helium-Studio/ios-raphael) 0082d 只读 probe：`BSD root: ufsroot0` + GPT 定位 userdata；F2FS 上 `hfs_mount error=22` 为预期边界）。其 0082e stage2 已刷 boot 分区 + rootfs 刷入 userdata，Apple logo 待回报。
 - ✅ **锁屏点亮（原生 4 系内核栈）**：swap-test t2（我们内核 + 修复 ADT：1 CPU + fbcon 0x9a4000 + /product 嫁接）已在实机进入 iOS 锁屏，用户态服务全面跑通（raphael-swaptest-r11 Release）。
-- 🚧 **HID 外设攻坚中**：触摸/按键已激活（r12 cmdline 开关）；视频取证定位**触摸异常根因 = iOS UI 相对面板 180° 倒置而触摸坐标无补偿（触点中心对称镜像）**，内核 0088 补丁在 touch_report() 翻转 X/Y（boot-arg `sweettouchflip`，默认 raphael 开）。r14 另交付 8 核 cmdline（cpus=8 + 原厂 DTB 编码 reg=0x000..0x700 实证）。熄屏渐慢渐暗 = 无背光控制下 iOS 内容级淡出动画低帧率，待持久日志验证 8 核上线（raphael-touch-r14 / raphael-8core-r13 Release）。
+- ✅ **8 核 + 按键实证（r15 日志）**：`SWEET CPU: 8/8 CPUs initialized`；按键事件已投递用户态（`SWEET HID: key ... (1 clients)`）
+- ✅ **触摸根因已修（0089）**：探针曾停死于 `GCC branch 0x1e008 halted (0x80000002)` —— wrap2 s_ahb 是 HWCG 门控分支（健康时 CLK_OFF 常驻 1），Linux 对其跳过检查，我们误判失败后静默退出；现按 Linux 语义放行
+- 🔧 **R14 结论修正**：所谓"面板 180° 倒置"实为拍摄时手机物理倒持（用户确认）；0088 修订为默认不翻转（`sweettouchflip=1` 可强制），触摸方向无需补偿
+- 🚧 **熄屏渐慢**：无 GPU、CPU 软渲染的锁屏淡出动画被拉长（display off 路径正常）；本轮 `sweetfb_hz` 30→60 对照实验
 
 ## 下载（Releases）
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-t6-touchflip-clean.img` | **当前首刷推荐（r14）**：0088 触摸 180° 翻转内核 + 8 核 + 无控制台叠加，修"触摸镜像错位" |
+| `raphael-t7-touchfix-clean.img` | **当前首刷推荐（r15）**：0089 触摸时钟修复 + 翻转已撤 + 8 核 + 无叠加，`sweetfb_hz=60` |
+| `raphael-t7-touchfix-debug.img` | r15 排障版：clean + `sweethidtest=15`（控制台同样已关） |
+| `raphael-t6-touchflip-clean.img` | r14：触摸 180° 翻转（**前提有误，已被 r15 撤销**，勿用） |
 | `raphael-t6-touchflip-debug.img` | r14 排障版：同上 + 屏上日志 + `sweethidtest=15` |
 | `raphael-t5-8core-clean.img` | r13 日常版（8 核 + 触摸开，内核无翻转——触摸异常时用它对照） |
 | `raphael-hid-clean.img` | r12 单核对照（cpus=1，触摸已开、无翻转） |
@@ -42,7 +47,8 @@ t5-8core-clean: a634a6c02d32535bf55ef6476c2cde6bf5f400e6a15664a4af70db1436322129
 t5-8core-debug: 72d1b75854d1b326c213738976a97d4e828a0d590e9a7dfd5c83f11a3f19eb25
 t6-flip-clean:  1d39aa012d754f246d7423d774765ae7254f2c25822d8f493241a5972de9b18e
 t6-flip-debug:  31e5a8725340d68564c97e9cfdadff360f298ec8421cc171b6d9f1233df4c43b
-```
+t7-touchfix-clean: 91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe
+t7-touchfix-debug: 70ca59669a99e6f6e3abeded879369c5f884d0c0aee36608758015f798dbc5c8```
 
 > HID 版与 t2 的差异仅 36/18 字节（608B cmdline 区内）：内核/ADT/DTB/shim 逐字节不变。判读树与日志取证见 Release 内 `FLASH-HID.md`。
 
@@ -142,3 +148,5 @@ adb pull /tmp/log.bin
 
 - [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) — 上游项目与纯 Linux rootfs 管线
 - XNU 内核与 iOS userspace 版权归 Apple Inc. 所有，本项目仅用于研究学习
+
+> r15 判读树与取证命令见 Release `raphael-touch-r15` 内 `FLASH-T7.md`。
