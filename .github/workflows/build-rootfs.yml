@@ -1,0 +1,168 @@
+# build-rootfs.yml — 一键生成 ios16-root.simg（iOS 16.7.16 / 20H392, iPhone10,3）
+# 用法：把本文件放到你 fork 的 ios-sweet 仓库 .github/workflows/build-rootfs.yml
+# 然后 Actions 页 → build-ios-rootfs → Run workflow（IPSW 直链留空即自动解析）
+# 产物：GitHub Release 里的 ios16-root.simg.part-*（≤1900MiB/个）+ CHECKSUMS.txt
+# 在主机 Termux 用 cat ios16-root.simg.part-* > ios16-root.simg 合并后即可 fastboot 刷写
+
+name: build-ios-rootfs
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipsw_url:
+        description: '可选：手动指定 IPSW 直链（留空=自动解析 iPhone10,3 iOS 16.7.16）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  rootfs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout（拉取 tools/ 下的 mkiosroot.sh 与 sweet-root-tweaks.py）
+        uses: actions/checkout@v4
+
+      - name: 安装依赖（hfsprogs / rsync / img2simg / apfs-fuse）
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y hfsprogs rsync android-sdk-libsparse-utils jq
+          if ! command -v apfs-fuse >/dev/null 2>&1; then
+            echo "== apt 源没有 apfs-fuse，转源码构建 =="
+            sudo apt-get install -y git cmake libb2-dev libbz2-dev zlib1g-dev libicu-dev
+            git clone --depth 1 https://github.com/sgan81/apfs-fuse.git /tmp/apfs-fuse
+            cd /tmp/apfs-fuse
+            git submodule update --init --recursive
+            mkdir -p build && cd build
+            cmake .. && make -j"$(nproc)" && sudo make install
+          fi
+          apfs-fuse 2>&1 | head -2 || true
+          mkfs.hfsplus 2>&1 | head -1 || true
+          img2simg 2>&1 | head -1 || true
+
+      - name: 解析 IPSW 直链（iPhone10,3 / iOS 16.7.16 / 20H392）
+        env:
+          IPSW_URL: ${{ github.event.inputs.ipsw_url }}
+        id: ipsw
+        run: |
+          set -e
+          if [ -n "$IPSW_URL" ]; then
+            URL="$IPSW_URL"
+          else
+            URL=$(curl -sL "https://api.ipsw.me/v4/device/iPhone10,3" \
+                  | jq -r '.firmwares[] | select(.version=="16.7.16") | .url' | head -n1)
+          fi
+          if [ -z "$URL" ]; then
+            echo "::error::IPSW 直链解析失败——请到 ipsw.me 查 iPhone10,3 16.7.16 的直链，填入 workflow 的 ipsw_url 输入后重跑"
+            exit 1
+          fi
+          echo "IPSW_URL=$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: 下载 IPSW 并只解出三个 dmg（OS / SystemOS / AppOS）
+        env:
+          URL: ${{ steps.ipsw.outputs.url }}
+        run: |
+          set -e
+          echo "== 下载 IPSW（约 7-8GB）=="
+          curl -L --retry 3 --retry-delay 5 -o /tmp/ipsw.zip "$URL"
+          echo "== 从 BuildManifest 定位三个 dmg =="
+          python3 - <<'PY'
+          import plistlib, zipfile, os, sys
+          z = zipfile.ZipFile('/tmp/ipsw.zip')
+          names = z.namelist()
+          bm = [n for n in names if n.endswith('BuildManifest.plist')][0]
+          pl = plistlib.loads(z.read(bm))
+          picked = {}
+          for ident in pl.get('BuildIdentities', []):
+              for want in ('OS', 'SystemOS', 'AppOS'):
+                  if want in picked:
+                      continue
+                  node = ident.get(want) or {}
+                  path = (node.get('Info') or {}).get('Path')
+                  if path and path in names:
+                      picked[want] = path
+              if len(picked) == 3:
+                  break
+          if len(picked) != 3:
+              # 兜底：按体积取前三大的 dmg（OS > SystemOS > AppOS）
+              print('BuildManifest 未凑齐，回退到体积启发式，候选：')
+              dmgs = sorted(
+                  [(i.file_size, n) for n in names
+                   if n.endswith('.dmg') and not os.path.basename(n).startswith('rr')],
+                  reverse=True)
+              for s, n in dmgs:
+                  print(f'  {s/1e9:6.2f}GB  {n}')
+              if len(dmgs) < 3:
+                  sys.exit('IPSW 里找不到三个 dmg')
+              for want, (_, n) in zip(('OS', 'SystemOS', 'AppOS'), dmgs[:3]):
+                  picked[want] = n
+          os.makedirs('dmgs', exist_ok=True)
+          for want, path in picked.items():
+              print(f'{want:9s} -> {path}')
+              z.extract(path, 'dmgs')
+          with open('dmgs/map.txt', 'w') as f:
+              for w, p in picked.items():
+                  f.write(f'{w}\t{p}\n')
+          PY
+          echo "== 删除 IPSW 腾出磁盘 =="
+          rm -f /tmp/ipsw.zip
+          df -h /
+
+      - name: 构建 16G HFS+ 根镜像（mkiosroot.sh：合并 OS + 双 cryptex + dyld 链接 + keybag）
+        run: |
+          set -e
+          OS=$(awk -F'\t' '$1=="OS"{print "dmgs/"$2}' dmgs/map.txt)
+          SYSOS=$(awk -F'\t' '$1=="SystemOS"{print "dmgs/"$2}' dmgs/map.txt)
+          APPOS=$(awk -F'\t' '$1=="AppOS"{print "dmgs/"$2}' dmgs/map.txt)
+          sudo -E bash tools/mkiosroot.sh "$OS" "$SYSOS" "$APPOS" ios16-root.img 16G
+          sudo fsck.hfsplus -fy ios16-root.img | tail -5
+          df -h /
+
+      - name: 打 bring-up 补丁（sweet-root-tweaks.py：跳过 Setup / 激活态 / 去基线带 / 看门狗）
+        run: |
+          set -e
+          sudo mkdir -p /mnt/iosroot
+          sudo mount -t hfsplus -o loop,force ios16-root.img /mnt/iosroot
+          sudo python3 tools/sweet-root-tweaks.py /mnt/iosroot
+          sudo umount /mnt/iosroot
+
+      - name: 转稀疏镜像并分卷（img2simg → ≤1900MiB 分卷，规避 Release 2GiB 单文件上限）
+        run: |
+          set -e
+          img2simg ios16-root.img ios16-root.simg
+          rm -f ios16-root.img
+          rm -rf dmgs
+          split -b 1900M -d ios16-root.simg ios16-root.simg.part-
+          sha256sum ios16-root.simg ios16-root.simg.part-* > CHECKSUMS.txt
+          rm -f ios16-root.simg
+          ls -lh ios16-root.simg.part-* CHECKSUMS.txt
+          df -h /
+
+      - name: 上传到 GitHub Release（永久直链）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-rootfs-16.7.16-${{ github.run_number }}
+          name: ios16-root 16.7.16 (20H392) sparse
+          body: |
+            iOS 16.7.16 (20H392) iPhone10,3 rootfs，HFS+ 16G 稀疏镜像。
+            下载全部 part-* 与 CHECKSUMS.txt，在主机端：
+              cat ios16-root.simg.part-* > ios16-root.simg
+              grep ' ios16-root.simg$' CHECKSUMS.txt | sha256sum -c -
+            刷写：fastboot -S 512M flash userdata ios16-root.simg
+            会清空 userdata（全部 Android 数据），bootloader/恢复/基带分区不受影响。
+          files: |
+            ios16-root.simg.part-*
+            CHECKSUMS.txt
+
+      - name: 上传 workflow artifact（备用下载通道，保留 90 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios16-root-simg
+          path: |
+            ios16-root.simg.part-*
+            CHECKSUMS.txt
