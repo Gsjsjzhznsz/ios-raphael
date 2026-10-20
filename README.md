@@ -12,14 +12,16 @@
 - ✅ rootfs 管线：iOS 16.7.16 → 16G HFS+ 镜像（CI 全自动，见 Releases）
 - ✅ **UFS 读路径已实机验证**（社区复现，[Helium-Studio/ios-raphael](https://github.com/Helium-Studio/ios-raphael) 0082d 只读 probe：`BSD root: ufsroot0` + GPT 定位 userdata；F2FS 上 `hfs_mount error=22` 为预期边界）。其 0082e stage2 已刷 boot 分区 + rootfs 刷入 userdata，Apple logo 待回报。
 - ✅ **锁屏点亮（原生 4 系内核栈）**：swap-test t2（我们内核 + 修复 ADT：1 CPU + fbcon 0x9a4000 + /product 嫁接）已在实机进入 iOS 锁屏，用户态服务全面跑通（raphael-swaptest-r11 Release）。
-- 🚧 **HID 外设攻坚中**：触摸/按键无反应的根因已定位 —— t2 cmdline 带 R10 保守开关 `sweetkeys=0 sweettouch=0`，内核轮询驱动从未启动（SWEET HID 注册播报是无条件框架层，无信息量）。内核二进制已内置全套 raphael 输入驱动（Goodix GT9889 @0x5d / SE19、ST FTS 0x49 备用、PM8150 GPIO6 音量+）。**修复版仅改 cmdline（raphael-hid-r12 Release），先刷 debug 后换 clean**。
+- 🚧 **HID 外设攻坚中**：触摸/按键已激活（r12 cmdline 开关）；视频取证定位**触摸异常根因 = iOS UI 相对面板 180° 倒置而触摸坐标无补偿（触点中心对称镜像）**，内核 0088 补丁在 touch_report() 翻转 X/Y（boot-arg `sweettouchflip`，默认 raphael 开）。r14 另交付 8 核 cmdline（cpus=8 + 原厂 DTB 编码 reg=0x000..0x700 实证）。熄屏渐慢渐暗 = 无背光控制下 iOS 内容级淡出动画低帧率，待持久日志验证 8 核上线（raphael-touch-r14 / raphael-8core-r13 Release）。
 
 ## 下载（Releases）
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-hid-debug.img` | **当前首刷推荐**：t2 同款内核/ADT + `sweetkeys=1 sweettouch=1 sweethidtest=15`，屏上实时日志定位 HID 初始化卡点 |
-| `raphael-hid-clean.img` | **确认触摸可用后日常用**：同上 + `sweetfb_noconsole=1 sweetfb_hz=30`（GUI 起后不画字，日志照进持久区） |
+| `raphael-t6-touchflip-clean.img` | **当前首刷推荐（r14）**：0088 触摸 180° 翻转内核 + 8 核 + 无控制台叠加，修"触摸镜像错位" |
+| `raphael-t6-touchflip-debug.img` | r14 排障版：同上 + 屏上日志 + `sweethidtest=15` |
+| `raphael-t5-8core-clean.img` | r13 日常版（8 核 + 触摸开，内核无翻转——触摸异常时用它对照） |
+| `raphael-hid-clean.img` | r12 单核对照（cpus=1，触摸已开、无翻转） |
 | `raphael-t2-native-fullfix.img` | 锁屏里程碑版（但 keys/touch 关闭，仅供对照） |
 | `raphael-t1/t3/t4-*.img` | R11 交叉定位组（已完成使命） |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷） |
@@ -36,6 +38,10 @@ verbose(8核): 720b903360caace991fd43878a18ab807861fd278b84f82f8d1ca10f578343e4
 t2-native:   1bc5396e04ae29447e1445968d40a72a9a987bdde95fb6f24ce49390738d4748
 hid-debug:   103215da2e6d80f55097523259f609c06bfd52e0fd0ddc323ca09a3c0358daf1
 hid-clean:   0a98df3b1545a1c50dab81ef770f048ea9c0e37d29804f523728e1772fb87b52
+t5-8core-clean: a634a6c02d32535bf55ef6476c2cde6bf5f400e6a15664a4af70db1436322129
+t5-8core-debug: 72d1b75854d1b326c213738976a97d4e828a0d590e9a7dfd5c83f11a3f19eb25
+t6-flip-clean:  1d39aa012d754f246d7423d774765ae7254f2c25822d8f493241a5972de9b18e
+t6-flip-debug:  31e5a8725340d68564c97e9cfdadff360f298ec8421cc171b6d9f1233df4c43b
 ```
 
 > HID 版与 t2 的差异仅 36/18 字节（608B cmdline 区内）：内核/ADT/DTB/shim 逐字节不变。判读树与日志取证见 Release 内 `FLASH-HID.md`。
