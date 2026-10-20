@@ -1,8 +1,9 @@
 # build-rootfs.yml — 一键生成 ios16-root.simg（iOS 16.7.16 / 20H392, iPhone10,3）
-# 用法：把本文件放到你 fork 的 ios-sweet 仓库 .github/workflows/build-rootfs.yml
-# 然后 Actions 页 → build-ios-rootfs → Run workflow（IPSW 直链留空即自动解析）
-# 产物：GitHub Release 里的 ios16-root.simg.part-*（≤1900MiB/个）+ CHECKSUMS.txt
-# 在主机 Termux 用 cat ios16-root.simg.part-* > ios16-root.simg 合并后即可 fastboot 刷写
+# 运行在 macOS runner：hdiutil 原生挂 APFS dmg、原生建大小写敏感日志式 HFS+
+# （ubuntu runner 内核无 hfsplus 模块，已放弃 Linux 路线）
+# 产物：GitHub Release 的 ios16-root.simg.part-*（≤1900MiB/卷）+ CHECKSUMS.txt
+# 主机端合并：cat ios16-root.simg.part-* > ios16-root.simg
+# 刷写：fastboot -S 512M flash userdata ios16-root.simg
 
 name: build-ios-rootfs
 
@@ -19,46 +20,25 @@ permissions:
 
 jobs:
   rootfs:
-    runs-on: ubuntu-latest
-    timeout-minutes: 300
+    runs-on: macos-14
+    timeout-minutes: 150
 
     steps:
-      - name: Checkout（拉取 tools/ 下的 mkiosroot.sh 与 sweet-root-tweaks.py）
+      - name: Checkout（tools/sweet-root-tweaks.py + tools/img2simg.py）
         uses: actions/checkout@v4
-
-      - name: 安装依赖（hfsprogs / rsync / img2simg / apfs-fuse）
-        run: |
-          set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y hfsprogs rsync android-sdk-libsparse-utils jq
-          if ! command -v apfs-fuse >/dev/null 2>&1; then
-            echo "== apt 源没有 apfs-fuse，转源码构建 =="
-            sudo apt-get install -y git cmake libfuse3-dev libbz2-dev liblzma-dev zlib1g-dev
-            git clone --depth 1 https://github.com/sgan81/apfs-fuse.git /tmp/apfs-fuse
-            cd /tmp/apfs-fuse
-            git submodule update --init --recursive
-            mkdir -p build && cd build
-            cmake .. && make -j"$(nproc)" && sudo make install
-          fi
-          command -v apfs-fuse >/dev/null 2>&1 || { echo "::error::apfs-fuse 构建失败"; exit 1; }
-          mkfs.hfsplus 2>&1 | head -1 || true
-          img2simg 2>&1 | head -1 || true
-          apfs-fuse -v 2>&1 | head -1 || true
 
       - name: 解析 IPSW 直链（iPhone10,3 / iOS 16.7.16 / 20H392）
         env:
           IPSW_URL: ${{ github.event.inputs.ipsw_url }}
-        id: ipsw
         run: |
           set -e
           if [ -n "$IPSW_URL" ]; then
             URL="$IPSW_URL"
           else
-            URL=$(curl -sL "https://api.ipsw.me/v4/device/iPhone10,3" \
-                  | jq -r '.firmwares[] | select(.version=="16.7.16") | .url' | head -n1)
+            URL=$(python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://api.ipsw.me/v4/device/iPhone10,3')); print(next(f['url'] for f in d['firmwares'] if f['version']=='16.7.16'))")
           fi
           if [ -z "$URL" ]; then
-            echo "::error::IPSW 直链解析失败——请到 ipsw.me 查 iPhone10,3 16.7.16 的直链，填入 workflow 的 ipsw_url 输入后重跑"
+            echo "::error::IPSW 直链解析失败——请到 ipsw.me 查 iPhone10,3 16.7.16 的直链填入 ipsw_url 重跑"
             exit 1
           fi
           echo "IPSW_URL=$URL"
@@ -69,9 +49,8 @@ jobs:
           URL: ${{ steps.ipsw.outputs.url }}
         run: |
           set -e
-          echo "== 下载 IPSW（约 7-8GB）=="
+          echo "== 下载 IPSW（约 5.9GB）=="
           curl -L --retry 3 --retry-delay 5 -o /tmp/ipsw.zip "$URL"
-          echo "== 从 BuildManifest 定位三个 dmg =="
           python3 - <<'PY'
           import plistlib, zipfile, os, sys
           z = zipfile.ZipFile('/tmp/ipsw.zip')
@@ -93,7 +72,6 @@ jobs:
               if len(picked) == 3:
                   break
           if len(picked) != 3:
-              # 兜底：按体积取前三大的 dmg（OS > SystemOS > AppOS）
               print('BuildManifest 未凑齐，回退到体积启发式，候选：')
               dmgs = sorted(
                   [(z.getinfo(n).file_size, n) for n in names
@@ -113,38 +91,126 @@ jobs:
               for w, p in picked.items():
                   f.write(f'{w}\t{p}\n')
           PY
-          echo "== 删除 IPSW 腾出磁盘 =="
           rm -f /tmp/ipsw.zip
           df -h /
 
-      - name: 构建 16G HFS+ 根镜像（mkiosroot.sh：合并 OS + 双 cryptex + dyld 链接 + keybag）
+      - name: 挂载三个 APFS dmg（hdiutil，原生解压 LZBITMAP）
         run: |
           set -e
-          OS=$(awk -F'\t' '$1=="OS"{print "dmgs/"$2}' dmgs/map.txt)
-          SYSOS=$(awk -F'\t' '$1=="SystemOS"{print "dmgs/"$2}' dmgs/map.txt)
-          APPOS=$(awk -F'\t' '$1=="AppOS"{print "dmgs/"$2}' dmgs/map.txt)
-          sudo -E bash tools/mkiosroot.sh "$OS" "$SYSOS" "$APPOS" ios16-root.img 16G
-          sudo fsck.hfsplus -fy ios16-root.img | tail -5
+          mkdir -p m_os m_sysos m_appos
+          mount_one() {
+            local f="$1" mp="$2"
+            local disk
+            disk=$(hdiutil attach -readonly -nomount "$f" | grep -o '^/dev/disk[0-9]*' | head -1)
+            echo "attached $f -> $disk"
+            diskutil mountDisk "$disk" || diskutil mount readOnly "${disk}s1" || true
+            local mp_found=""
+            for s in $(diskutil list "$disk" | grep -oE "$disk"s[0-9]+); do
+              p=$(diskutil info "$s" 2>/dev/null | sed -n 's/^ *Mount Point: *//p' | head -1)
+              if [ -n "$p" ] && [ "$p" != "Not Mounted" ]; then mp_found="$p"; break; fi
+            done
+            [ -n "$mp_found" ] || { echo "::error::$f 挂载失败"; diskutil list "$disk"; exit 1; }
+            echo "mounted $f at $mp_found"
+            # 供后续步骤引用
+            echo "$mp_found" > "$mp.txt"
+          }
+          OS_D=$(awk -F'\t' '$1=="OS"{print "dmgs/"$2}' dmgs/map.txt)
+          SYS_D=$(awk -F'\t' '$1=="SystemOS"{print "dmgs/"$2}' dmgs/map.txt)
+          APP_D=$(awk -F'\t' '$1=="AppOS"{print "dmgs/"$2}' dmgs/map.txt)
+          mount_one "$OS_D"   m_os
+          mount_one "$SYS_D"  m_sysos
+          mount_one "$APP_D"  m_appos
+
+      - name: 建 16G 大小写敏感日志式 HFS+ 并三段拷贝（等价 mkiosroot.sh）
+        run: |
+          set -e
+          M_OS=$(cat m_os.txt); M_SYS=$(cat m_sysos.txt); M_APP=$(cat m_appos.txt)
+          # OS 卷的根：apfs-fuse 布局是 <mount>/root，macOS 原生挂载就是卷根。
+          # 兼容两种布局：若存在 root 子目录则用它。
+          [ -d "$M_OS/root" ] && M_OS="$M_OS/root"
+          [ -d "$M_SYS/root" ] && M_SYS="$M_SYS/root"
+          [ -d "$M_APP/root" ] && M_APP="$M_APP/root"
+          echo "== 建 16G UDRW HFSX+J =="
+          hdiutil create -size 16g -type UDRW -fs "Case-sensitive Journaled HFS+" \
+            -volname iOSRoot -layout NONE -o ios16-root.dmg
+          mkdir -p m_root
+          hdiutil attach -owners on -mountpoint "$PWD/m_root" ios16-root.dmg
+          copy() {
+            echo "copying $1 -> $2"
+            sudo mkdir -p "$2"
+            sudo rsync -aH --numeric-ids "$1/" "$2/" || {
+              echo "rsync 不可用（openrsync?），改用 ditto"
+              sudo ditto "$1" "$2"
+            }
+          }
+          copy "$M_OS/"   "$PWD/m_root"
+          copy "$M_SYS/"  "$PWD/m_root/private/preboot/Cryptexes/OS"
+          copy "$M_APP/"  "$PWD/m_root/private/preboot/Cryptexes/App"
+
+          # dyld 共享缓存硬链接（ignition_level=1 查找路径）
+          dsc="private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld"
+          sudo mkdir -p "$PWD/m_root/System/Library/Caches/com.apple.dyld"
+          for f in "$PWD/m_root/$dsc"/*; do
+            sudo ln "$f" "$PWD/m_root/System/Library/Caches/com.apple.dyld/${f##*/}"
+          done
+          # cryptex 内独有文件补链到根路径
+          for c in OS App; do
+            (cd "$PWD/m_root/private/preboot/Cryptexes/$c" && sudo find . ! -type d ! -path './System/Library/Caches/com.apple.dyld/*') |
+            while IFS= read -r f; do
+              f=${f#./}
+              if ! sudo test -e "$PWD/m_root/$f" && ! sudo test -L "$PWD/m_root/$f"; then
+                sudo mkdir -p "$PWD/m_root/$(dirname "$f")"
+                src="$PWD/m_root/private/preboot/Cryptexes/$c/$f"
+                if sudo test -L "$src"; then sudo cp -P "$src" "$PWD/m_root/$f"; else sudo ln "$src" "$PWD/m_root/$f"; fi
+                echo "linked $c:/$f"
+              fi
+            done
+          done
+          # logd 日志库（属主 272/_logd）+ 迁移标记
+          db="$PWD/m_root/private/var/db"
+          sudo install -d -o 272 -g 272 -m 0751 "$db/diagnostics"
+          sudo install -d -o 272 -g 272 -m 0755 "$db/uuidtext" "$db/diagnostics/timesync"
+          for d in diagnostics uuidtext diagnostics/timesync; do
+            sudo install -o 272 -g 272 -m 0644 /dev/null "$db/$d/.migrated"
+          done
+          # 系统钥匙包（无密码 keybag）
+          sudo install -d -m 0700 -o 0 -g 0 "$PWD/m_root/private/var/keybags"
+          printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' |
+            sudo install -m 0600 -o 0 -g 0 /dev/stdin "$PWD/m_root/private/var/keybags/systembag.kb"
+          df -h "$PWD/m_root" || true
+
+      - name: bring-up 补丁（sweet-root-tweaks.py）并卸载
+        run: |
+          set -e
+          sudo python3 tools/sweet-root-tweaks.py "$PWD/m_root"
+          hdiutil detach -force "$PWD/m_root" || hdiutil detach -force "$(hdiutil info | grep ios16-root -B5 | grep '^/dev/disk' | head -1)" || true
+          # 卸载三个 dmg
+          for mp in $(cat m_os.txt m_sysos.txt m_appos.txt); do
+            dev=$(mount | grep " on $mp " | grep -oE '^/dev/disk[0-9]+(s[0-9]+)?' | head -1)
+            [ -n "$dev" ] && diskutil eject -force "$dev" || true
+          done
           df -h /
 
-      - name: 打 bring-up 补丁（sweet-root-tweaks.py：跳过 Setup / 激活态 / 去基线带 / 看门狗）
+      - name: fsck_hfs 校验
         run: |
           set -e
-          sudo mkdir -p /mnt/iosroot
-          sudo mount -t hfsplus -o loop,force ios16-root.img /mnt/iosroot
-          sudo python3 tools/sweet-root-tweaks.py /mnt/iosroot
-          sudo umount /mnt/iosroot
+          FSCK=$(command -v fsck_hfs || echo /System/Library/Filesystems/hfs.fs/Contents/Resources/fsck_hfs)
+          DISK=$(hdiutil attach -readonly -nomount ios16-root.dmg | grep -o '^/dev/disk[0-9]*' | head -1)
+          echo "fsck on $DISK"
+          "$FSCK" -f -y "$DISK" | tail -8
+          "$FSCK" -f -n "$DISK" | tail -3
+          hdiutil detach -force "$DISK"
 
-      - name: 转稀疏镜像并分卷（img2simg → ≤1900MiB 分卷，规避 Release 2GiB 单文件上限）
+      - name: 转稀疏镜像 + 1900MiB 分卷（纯 Python img2simg）
         run: |
           set -e
-          img2simg ios16-root.img ios16-root.simg
-          rm -f ios16-root.img
-          rm -rf dmgs
-          split -b 1900M -d ios16-root.simg ios16-root.simg.part-
-          sha256sum ios16-root.simg ios16-root.simg.part-* > CHECKSUMS.txt
-          rm -f ios16-root.simg
-          ls -lh ios16-root.simg.part-* CHECKSUMS.txt
+          python3 tools/img2simg.py ios16-root.dmg ios16-root.simg 1900
+          rm -f ios16-root.dmg
+          ls -lh ios16-root.simg ios16-root.simg.part-*
+          shasum -a 256 ios16-root.simg ios16-root.simg.part-* > CHECKSUMS.txt
+          cat CHECKSUMS.txt
           df -h /
 
       - name: 上传到 GitHub Release（永久直链）
@@ -156,7 +222,7 @@ jobs:
             iOS 16.7.16 (20H392) iPhone10,3 rootfs，HFS+ 16G 稀疏镜像。
             下载全部 part-* 与 CHECKSUMS.txt，在主机端：
               cat ios16-root.simg.part-* > ios16-root.simg
-              grep ' ios16-root.simg$' CHECKSUMS.txt | sha256sum -c -
+              shasum -a 256 -c <(grep ' ios16-root.simg$' CHECKSUMS.txt)
             刷写：fastboot -S 512M flash userdata ios16-root.simg
             会清空 userdata（全部 Android 数据），bootloader/恢复/基带分区不受影响。
           files: |
