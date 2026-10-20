@@ -32,16 +32,26 @@ jobs:
           IPSW_URL: ${{ github.event.inputs.ipsw_url }}
         run: |
           set -e
+          URL=""
           if [ -n "$IPSW_URL" ]; then
             URL="$IPSW_URL"
           else
-            URL=$(python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://api.ipsw.me/v4/device/iPhone10,3')); print(next(f['url'] for f in d['firmwares'] if f['version']=='16.7.16'))")
+            # ipsw.me 解析（带重试）；失败则回退到已验证的 Apple CDN 直链
+            for i in 1 2 3; do
+              J=$(curl -sL --max-time 30 "https://api.ipsw.me/v4/device/iPhone10,3" || true)
+              URL=$(printf '%s' "$J" | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(f['url'] for f in d['firmwares'] if f['version']=='16.7.16'))" 2>/dev/null || true)
+              [ -n "$URL" ] && break
+              sleep 5
+            done
+            [ -n "$URL" ] || URL="https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw"
           fi
-          if [ -z "$URL" ]; then
-            echo "::error::IPSW 直链解析失败——请到 ipsw.me 查 iPhone10,3 16.7.16 的直链填入 ipsw_url 重跑"
+          # 直链可达性预检
+          code=$(curl -sIL -o /dev/null -w '%{http_code}' --max-time 30 "$URL")
+          if [ "$code" != "200" ] && [ "$code" != "302" ]; then
+            echo "::error::IPSW 直链不可达（HTTP $code）：$URL"
             exit 1
           fi
-          echo "IPSW_URL=$URL"
+          echo "IPSW_URL=$URL (HTTP $code)"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: 下载 IPSW 并只解出三个 dmg（OS / SystemOS / AppOS）
