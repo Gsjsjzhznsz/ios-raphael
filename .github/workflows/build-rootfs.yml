@@ -140,7 +140,7 @@ jobs:
           [ -d "$M_SYS/root" ] && M_SYS="$M_SYS/root"
           [ -d "$M_APP/root" ] && M_APP="$M_APP/root"
           echo "== 建 16G UDRW HFSX+J =="
-          hdiutil create -size 16g -type UDRW -fs "Case-sensitive Journaled HFS+" \
+          hdiutil create -size 16g -fs "Case-sensitive Journaled HFS+" \
             -volname iOSRoot -layout NONE ios16-root.dmg
           mkdir -p m_root
           hdiutil attach -owners on -mountpoint "$PWD/m_root" ios16-root.dmg
