@@ -1,0 +1,35 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 3f9c2a1..7d2e91aa 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -221,10 +221,26 @@
+         const uint32_t branches[] = {0x18004, 0x18008, 0x1800c, 0x18010, 0x18144};
+ #endif
+         for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
+-                if (!touch_wait_clear(st.gcc, branches[i], 1u << 31)) {
+-                        printf("SWEET TOUCH: GCC branch %#x halted (%#x)\n", branches[i],
+-                            touch_rd(st.gcc, branches[i]));
+-                        return false;
++                uint32_t val = touch_rd(st.gcc, branches[i]);
++                if (!(val & (1u << 31))) {
++                        continue; /* running */
++                }
++                /* Linux clk_branch_wait() skips the halt check when the
++                 * branch is in hardware clock-gating mode: with the HWCG
++                 * bit set the clock auto-gates while idle and CLK_OFF reads
++                 * 1 even though the branch is enabled and usable. wrap2
++                 * s_ahb (0x1e008) is such a clock -- its healthy 0x80000002
++                 * used to abort raphael touch bring-up silently. */
++                if (val & (1u << 1)) { /* HWCG mode */
++                        printf("SWEET TOUCH: GCC branch %#x HW-gated (%#x); ok\n",
++                            branches[i], val);
++                        continue;
++                }
++                if (!touch_wait_clear(st.gcc, branches[i], 1u << 31)) {
++                        /* Never a hard stop: the SE firmware print below is
++                         * the real verdict on whether the engine is alive. */
++                        printf("SWEET TOUCH: GCC branch %#x still halted (%#x); continuing\n",
++                            branches[i], touch_rd(st.gcc, branches[i]));
+                 }
+         }
+         return true;

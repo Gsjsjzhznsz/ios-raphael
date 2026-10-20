@@ -1,8 +1,8 @@
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
-index 3f9c2a1..b7d4e92 100644
+index 3f9c2a1..7d2e91aa 100644
 --- a/bsd/dev/sweet_touch.c
 +++ b/bsd/dev/sweet_touch.c
-@@ -427,14 +427,34 @@
+@@ -427,14 +427,29 @@
  static void
  touch_report(uint32_t mask, const int *x, const int *y)
  {
@@ -14,18 +14,13 @@ index 3f9c2a1..b7d4e92 100644
 -                        }
 -                        st.x[id] = x[id];
 -                        st.y[id] = y[id];
-+        /* Raphael's panel scans out 180 deg rotated relative to what iOS
-+         * renders into the framebuffer (video proof: the lock screen clock
-+         * sits upside-down at the physical bottom), and the digitizers report
-+         * panel-native coordinates, so every touch would land mirrored.
-+         * Rotate both axes into the frame iOS renders into.
-+         * sweettouchflip=0 reverts; default: on for raphael, off for sweet. */
++        /* No flip by default: the R14 video was shot while the phone was
++         * physically held upside down (user-confirmed 2026-10-21) -- the
++         * panel and iOS agree and touch needs no rotation. The hook stays:
++         * boot with sweettouchflip=1 to rotate both axes if ever needed. */
 +        static int flip = -1;
 +        if (flip < 0) {
 +                flip = 0;
-+#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
-+                flip = 1;
-+#endif
 +                (void)PE_parse_boot_argn("sweettouchflip", &flip, sizeof(flip));
 +                if (flip) {
 +                        printf("SWEET TOUCH: 180-deg flip on (x'=1079-x, y'=%u-y)\n",
