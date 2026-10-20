@@ -33,16 +33,17 @@ jobs:
           sudo apt-get install -y hfsprogs rsync android-sdk-libsparse-utils jq
           if ! command -v apfs-fuse >/dev/null 2>&1; then
             echo "== apt 源没有 apfs-fuse，转源码构建 =="
-            sudo apt-get install -y git cmake libb2-dev libbz2-dev zlib1g-dev libicu-dev
+            sudo apt-get install -y git cmake libfuse3-dev libbz2-dev liblzma-dev zlib1g-dev
             git clone --depth 1 https://github.com/sgan81/apfs-fuse.git /tmp/apfs-fuse
             cd /tmp/apfs-fuse
             git submodule update --init --recursive
             mkdir -p build && cd build
             cmake .. && make -j"$(nproc)" && sudo make install
           fi
-          apfs-fuse 2>&1 | head -2 || true
+          command -v apfs-fuse >/dev/null 2>&1 || { echo "::error::apfs-fuse 构建失败"; exit 1; }
           mkfs.hfsplus 2>&1 | head -1 || true
           img2simg 2>&1 | head -1 || true
+          apfs-fuse -v 2>&1 | head -1 || true
 
       - name: 解析 IPSW 直链（iPhone10,3 / iOS 16.7.16 / 20H392）
         env:
