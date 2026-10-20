@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 3f9c2a1..b7d4e92 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -427,14 +427,34 @@
+ static void
+ touch_report(uint32_t mask, const int *x, const int *y)
+ {
+-        for (unsigned id = 0; id < TOUCH_MAX; ++id) {
+-                uint32_t bit = 1u << id;
+-                if (mask & bit) {
+-                        if (!(st.active & bit) || x[id] != st.x[id] || y[id] != st.y[id]) {
+-                                sweet_hid_touch((int)id, 1, x[id], y[id]);
+-                        }
+-                        st.x[id] = x[id];
+-                        st.y[id] = y[id];
++        /* Raphael's panel scans out 180 deg rotated relative to what iOS
++         * renders into the framebuffer (video proof: the lock screen clock
++         * sits upside-down at the physical bottom), and the digitizers report
++         * panel-native coordinates, so every touch would land mirrored.
++         * Rotate both axes into the frame iOS renders into.
++         * sweettouchflip=0 reverts; default: on for raphael, off for sweet. */
++        static int flip = -1;
++        if (flip < 0) {
++                flip = 0;
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++                flip = 1;
++#endif
++                (void)PE_parse_boot_argn("sweettouchflip", &flip, sizeof(flip));
++                if (flip) {
++                        printf("SWEET TOUCH: 180-deg flip on (x'=1079-x, y'=%u-y)\n",
++                            TOUCH_MAX_Y);
++                }
++        }
++        for (unsigned id = 0; id < TOUCH_MAX; ++id) {
++                uint32_t bit = 1u << id;
++                if (mask & bit) {
++                        int px = flip ? 1079 - x[id] : x[id];
++                        int py = flip ? (int)TOUCH_MAX_Y - y[id] : y[id];
++                        if (!(st.active & bit) || px != st.x[id] || py != st.y[id]) {
++                                sweet_hid_touch((int)id, 1, px, py);
++                        }
++                        st.x[id] = px;
++                        st.y[id] = py;
+                 } else if (st.active & bit) {
+                         sweet_hid_touch((int)id, 0, st.x[id], st.y[id]);
+                 }
