@@ -57,3 +57,23 @@ SWEETXNU payload v1 头（与上游 tools/mkpayload.py 一致）：
 - header `id[]`（20B build id）由原构建管线对重打包前输入计算，本地无法复现；
   重打包后保持原值。该字段纯记录用途，ABL/shim 均不校验（diag5 实测证明）。
 - 本工具只改 payload cmdline 缓冲区（608B，NUL 填充），绝不动 kernel/ADT/DTB 字节。
+
+## Single-core (sc) recipe — 2026-10-20
+
+All physically verified raphael successes (our diag5, Helium-Studio 0082b/c/d/e)
+ran `cpus=1`. The 8-core cmdline is suspected to stall secondary bring-up: our
+ADT encodes `reg = core << 8` (Aff1 = core, an SM7150 layout), while SM8150's
+real MPIDR map is 1x Prime + 3x Gold (Aff1=0) + 4x Silver (Aff1=1) — Aff1>=2
+cores do not exist. The sc images align the boot-args with the community-verified
+stage2 recipe (`ufsroot=userdata sweetlog=1 sweetkeys=0 sweettouch=0
+sweetusb=0 sweetbattery=0`) while keeping the diag5 kernel/ADT/DTB untouched:
+
+```sh
+# verbose (on-screen console, first flash)
+python3 tools/repack-boot-v2.py diag5.img out-sc-verbose.img --check --cmdline \
+ 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 ufsroot=userdata unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetlog=1 sweetkeys=0 sweettouch=0 sweetusb=0 sweetbattery=0'
+# full (console muted, second flash) — same + sweetfb_noconsole=1 sweetfb_hz=30
+```
+
+SHA256: sc-full `b8b3e47a...e6c0dd25`, sc-verbose `6db479ab...442acc7ab`
+(both 17,326,080 bytes; all byte diffs verified inside the 608B cmdline buffer).
