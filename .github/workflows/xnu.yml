@@ -10,8 +10,8 @@ on:
         description: RELEASE / DEVELOPMENT / DEBUG
         default: DEVELOPMENT
       machine_config:
-        description: xnu MACHINE_CONFIG
-        default: SWEET
+        description: xnu MACHINE_CONFIG (this repo is raphael-only; SWEET only for regression checks)
+        default: RAPHAEL
       keep_going:
         description: make -k (collect all compile errors in one run)
         default: "true"
@@ -30,7 +30,11 @@ env:
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
   MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
-  MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
+  # RAPHAEL is the repo's board. Push-triggered runs have empty `inputs`, so the
+  # fallback MUST be RAPHAEL: with 'SWEET' every push-built kernel silently
+  # compiled the SM7150 code paths and the raphael touch/keys/USB deltas were
+  # dead code (r12-r15/t2-t7 bug, diagnosed 2026-10-21 from the t7 CI log).
+  MACHINE_CONFIG: ${{ inputs.machine_config || 'RAPHAEL' }}
 
 jobs:
   build:
@@ -72,7 +76,23 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+        run: |
+          set -o pipefail
+          bash build.sh 2>&1 | tee build.log
+
+      - name: Verify board macro reached the C files
+        if: env.MACHINE_CONFIG == 'RAPHAEL'
+        working-directory: dxb
+        run: |
+          # r12-r15 regression guard: a push build with the SWEET fallback used
+          # to produce a kernel where every #if ARM64_BOARD_CONFIG_RAPHAEL
+          # delta (touch SE19/GT9889, keys, USB) compiled away as dead code.
+          n=$(grep -c 'DARM64_BOARD_CONFIG_RAPHAEL' build.log || true)
+          echo "compile commands containing -DARM64_BOARD_CONFIG_RAPHAEL: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::Kernel compiled WITHOUT -DARM64_BOARD_CONFIG_RAPHAEL (MACHINE_CONFIG=$MACHINE_CONFIG fell back to SWEET). Raphael deltas would be dead code."
+            exit 1
+          fi
 
       - name: Package build tree for local compiles
         if: always()
