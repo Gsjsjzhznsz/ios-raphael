@@ -200,6 +200,7 @@ jobs:
             dev=$(mount | grep " on $mp " | grep -oE '^/dev/disk[0-9]+(s[0-9]+)?' | head -1)
             [ -n "$dev" ] && diskutil eject -force "$dev" || true
           done
+          rm -rf dmgs
           df -h /
 
       - name: fsck_hfs 校验
@@ -212,13 +213,15 @@ jobs:
           "$FSCK" -f -n "$DISK" | tail -3
           hdiutil detach -force "$DISK"
 
-      - name: 转稀疏镜像 + 1900MiB 分卷（纯 Python img2simg）
+      - name: 转稀疏镜像 + 1900MiB 分卷（纯 Python img2simg，分卷前释放原图空间）
         run: |
           set -e
-          python3 tools/img2simg.py ios16-root.dmg ios16-root.simg 1900
+          python3 -c "import sys; sys.path.insert(0,'tools'); import img2simg; img2simg.convert('ios16-root.dmg','ios16-root.simg')"
           rm -f ios16-root.dmg
-          ls -lh ios16-root.simg ios16-root.simg.part-*
+          python3 -c "import sys; sys.path.insert(0,'tools'); import img2simg; print('parts:', img2simg.split('ios16-root.simg',1900))"
           shasum -a 256 ios16-root.simg ios16-root.simg.part-* > CHECKSUMS.txt
+          rm -f ios16-root.simg
+          ls -lh ios16-root.simg.part-*
           cat CHECKSUMS.txt
           df -h /
 
