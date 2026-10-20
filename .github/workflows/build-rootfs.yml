@@ -78,21 +78,24 @@ jobs:
           bm = [n for n in names if n.endswith('BuildManifest.plist')][0]
           pl = plistlib.loads(z.read(bm))
           picked = {}
+          WANTS = (('OS', 'OS'), ('SystemOS', 'Cryptex1,SystemOS'), ('AppOS', 'Cryptex1,AppOS'))
           for ident in pl.get('BuildIdentities', []):
-              for want in ('OS', 'SystemOS', 'AppOS'):
+              man = ident.get('Manifest') or {}
+              for want, key in WANTS:
                   if want in picked:
                       continue
-                  node = ident.get(want) or {}
-                  path = (node.get('Info') or {}).get('Path')
-                  if path and path in names:
-                      picked[want] = path
+                  for node in (man.get(key), ident.get(key)):
+                      path = (node or {}).get('Info', {}).get('Path') if isinstance(node, dict) else None
+                      if path and path in names:
+                          picked[want] = path
+                          break
               if len(picked) == 3:
                   break
           if len(picked) != 3:
               # 兜底：按体积取前三大的 dmg（OS > SystemOS > AppOS）
               print('BuildManifest 未凑齐，回退到体积启发式，候选：')
               dmgs = sorted(
-                  [(i.file_size, n) for n in names
+                  [(z.getinfo(n).file_size, n) for n in names
                    if n.endswith('.dmg') and not os.path.basename(n).startswith('rr')],
                   reverse=True)
               for s, n in dmgs:
