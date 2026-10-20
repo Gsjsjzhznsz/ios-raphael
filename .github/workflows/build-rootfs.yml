@@ -182,12 +182,11 @@ jobs:
           for d in diagnostics uuidtext diagnostics/timesync; do
             sudo install -o 272 -g 272 -m 0644 /dev/null "$db/$d/.migrated"
           done
-          # 系统钥匙包（无密码 keybag）
-          sudo install -d -m 0700 -o 0 -g 0 "$PWD/m_root/private/var/keybags"
+          # 系统钥匙包（无密码 keybag）——BSD install 不收 /dev/stdin，先落临时文件
           printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
             '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-            '<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' |
-            sudo install -m 0600 -o 0 -g 0 /dev/stdin "$PWD/m_root/private/var/keybags/systembag.kb"
+            '<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' > /tmp/systembag.kb
+          sudo install -m 0600 -o 0 -g 0 /tmp/systembag.kb "$PWD/m_root/private/var/keybags/systembag.kb"
           df -h "$PWD/m_root" || true
 
       - name: bring-up 补丁（sweet-root-tweaks.py）并卸载
