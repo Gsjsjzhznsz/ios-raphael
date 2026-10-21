@@ -209,3 +209,23 @@ Stage Summary:
 - 触摸失灵定性：既非 SE19 固件未加载、非 I2C 地址错误、也非二供批次——raphael 触摸代码根本没编进 t7 内核
 - t8 为首次"RAPHAEL 编译 + 0089"组合；预期日志：分支 0x1e004/0x1e008(HW-gated ok)/0x1e3a4 + TLMM reset(gpio54) 供电 + probe 0x5d ver-reg / probe ST FTS 0x49
 - CI 侧回归防线就位：宏断言防复发；回退 = 任意 t 系列直启
+
+---
+
+Task ID: 11
+Agent: Super Z (main agent, post-handover session)
+Task: 项目交接（session 更替）——凭据/仓库/CI/Release 全量盘点，本地工作环境恢复，worklog 双写机制重建
+
+Work Log:
+- 接收用户指示：GitHub 凭据保留使用（token 已内嵌于 git remote URL，`git remote get-url origin` 可取；用户明确豁免安全顾虑）；裸 token 不入 git（AGENTS.md 卫生规则）
+- Clone Gsjsjzhznsz/ios-raphael main @ c1da721（= r16/t8 发布提交），工作树 clean，与 origin/main 同步
+- 通读交接材料：README.md（r16/t8 状态表 + 下载表 + 刷机指南）、AGENTS.md（worklog 双写 + 即时 push 协议）、NOTES.md（SM8150 硬件事实 / GT9889 协议 / ST FTS 二供 / USB 表）、docs/WORKLOG.md Task 1-10 全量、docs/FLASH-T8.md（t8 判读树）
+- CI 核查（API）：最新 xnu push run 39517478755（ea69ad1）success —— 即 t8 内核（RAPHAEL 宏 937/937 复验通过的那次构建）；build-ios-rootfs 39371434600 success
+- Release 核查：共 9 个（ios-rootfs-16.7.16-12 … raphael-touch-r16）；最新 raphael-touch-r16（2026-10-21T00:10Z）= t8-clean/debug + FLASH-T8.md + T8-SHA256SUMS，与 README 下载表哈希一致；无 open issues
+- 本地环境恢复：/home/z/my-project/download/ 为空（新会话起点，t 系列镜像按需从 Release 取）；重建 /home/z/my-project/worklog.md 并与 docs/WORKLOG.md 同步
+- 交接点确认：t8 已发布未实测 —— 等待用户真机 fastboot boot raphael-t8-clean.img（或 debug 版）回传：触摸现象 + sweet-log.bin；判读路径 = FLASH-T8.md 决胜行（probe 0x5d / ST FTS 0x49 / probes skipped）
+- 挂起事项继承：熄屏渐慢（sweetfb_hz 30→60 对照，t7/t8 cmdline 已带 60）待 t8 回报时一并观察
+
+Stage Summary:
+- 交接完成，无状态丢失；项目处于 r16/t8 待实测节点
+- 下一步：用户刷 t8 → 回传日志/现象 → 按 FLASH-T8.md 判读 → 触摸收尾或转入下一子系统迭代
