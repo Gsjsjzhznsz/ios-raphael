@@ -86,9 +86,13 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, raphael=False):
+def build(seed=None, qemu=False, highmem=False, raphael=False, cpus=None):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py).
-    raphael=True: Redmi K20 Pro panel geometry and Kryo 485 clocks."""
+    raphael=True: Redmi K20 Pro panel geometry and Kryo 485 clocks.
+    cpus=N: /cpus child node count (default 8). N=1 replicates the t2 swap-test
+    ADT -- the only configuration a RAPHAEL-compiled kernel has ever booted past
+    `bootstrap done` with (r11/t8 analysis: all RAPHAEL builds stalled there
+    except t2, whose ADT carried exactly one CPU node)."""
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     fb_h, fb_stride = (RAPHAEL_FB_H, RAPHAEL_FB_STRIDE) if raphael else (FB_H, FB_STRIDE)
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
@@ -144,7 +148,7 @@ def build(seed=None, qemu=False, highmem=False, raphael=False):
     # and uses cpus=N to select an initial prefix (N <= 8).
     # QEMU retains its original single-CPU tree: its MPIDRs differ from the phone trees.
     cpu_nodes = []
-    for core in range(1 if qemu else 8):
+    for core in range(1 if qemu else (cpus if cpus else 8)):
         # SM8150 (raphael): cpu0 = Kryo 485 Prime 2.8416 GHz, cpu1-3 Gold
         # 2.4192 GHz, cpu4-7 Silver 1.8048 GHz (sm8150.dtsi CPU0..CPU7);
         # SM7150 (sweet): cpu0-5 A55 1.8048 GHz, cpu6-7 A76 2.304 GHz.
@@ -255,8 +259,12 @@ def build(seed=None, qemu=False, highmem=False, raphael=False):
 
 
 if __name__ == '__main__':
+    cpus_arg = None
+    for a in sys.argv:
+        if a.startswith('--cpus='):
+            cpus_arg = int(a.split('=', 1)[1])
     root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
-                 raphael='--raphael' in sys.argv)
+                 raphael='--raphael' in sys.argv, cpus=cpus_arg)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:

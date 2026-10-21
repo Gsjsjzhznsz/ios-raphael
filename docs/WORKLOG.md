@@ -229,3 +229,30 @@ Work Log:
 Stage Summary:
 - 交接完成，无状态丢失；项目处于 r16/t8 待实测节点
 - 下一步：用户刷 t8 → 回传日志/现象 → 按 FLASH-T8.md 判读 → 触摸收尾或转入下一子系统迭代
+
+---
+
+Task ID: 12
+Agent: Super Z (main agent)
+Task: t8 实测回归（卡 bootstrap done，t7 正常）→ 取证定位 → t9 修复发布 + 发行版清理（保留 t7/ios16）
+
+Work Log:
+- 用户回报：t8 卡 bootstrap 而 t7 正常；要求恢复 bootstrap done 之后的启动链；清除发行版只保留 t7 与 ios16
+- 取证基建：下载 t8 内核 CI 构建树产物（run 39517478755 xnu-buildtree，含已应用全部 89 补丁的源码）；下载 t2/t6/t7/t8 四代镜像（SHA256 与发布值一致）；趁删除前抢救 R11 交叉定位文档 TEST-MATRIX-R11.md
+- 代码侧排查（全链路）：git diff 333512b..ea69ad1 实锤 t6→t8 树差异仅 sweet_touch.c（线程路径，45s 延迟启动，所有等待带上界）；sweet_early/SweetHID/keys/usb 的 raphael 段逐一审计均无害 → 单纯代码差异无法解释 t7/t8 分野
+- 决定性实证（镜像字符串标记 + ADT 逐节点解析）：
+  1) t2/t8 = RAPHAEL 编译（TLMM reset(gpio/census 在），t6/t7 = SWEET 编译（Yellowstone/L11C 在）—— t5–t7 全是 SWEET 内核，RAPHAEL 编译从未在 t 系列成功启动；纠正 Task 10 "r14=dispatch/RAPHAEL" 的记载（t6 镜像为 SWEET 编译）
+  2) t 系列 ADT（t6/t7/t8 逐字节同，f50510e0）与 t2 ADT 唯一结构差异 = CPU 节点 1→8（fbcon 9c000000+0x9a4000、/product、其余全部相同）
+  3) R11 矩阵复盘：diag5/r11-sc/t8 三个 RAPHAEL 启动全部卡在同一卡点（UFS probe 之前），唯一例外 t2；t2 差异 = ①匹配表 kryo470→485（只做过二进制就地补丁，从未入库：KernelConfigTables.cpp:47 仍是 kryo470 vs ADT 声明 kryo485）②ADT 仅 1 CPU 节点；两变量从未隔离（t3/t4 未测）
+- t9 修复（t2 配方正式入库）：
+  - 补丁 0090-raphael-cpu-match：IONameMatch 'qcom,kryo470'→'qcom,kryo485' + cpuName "Kryo 470"→"Kryo 485"（从构建树 git diff 生成，提交 51af6b9，CI run 39557186698 SUCCESS，内核 SHA 32327c91…，字符串验证 kryo485 在/kryo470 消/0089 在）
+  - ADT：scripts/mkadt-1cpu.py 对已发布 t8 ADT 外科手术删 cpu1–7（adt.py 解析/序列化，其余节点逐字节保序）= 7044 字节，与 t2 ADT 同尺寸同拓扑；mkadt.py 增加 --cpus=N 入口（再生成路线因 d22ap.adt 缺失不可用，已记录）
+  - 打包 scripts/t9_package.py：t7 镜像骨架 + 新内核 + 1-CPU ADT；clean cmdline 与 t7 逐字节一致（330B）；debug = 去 sweetfb_noconsole=1（屏幕控制台常开，r11 取证法）；六重校验全过（ANDROID!v2/shim/DTB==t7/ADT/cmdline/markers/entry 0xfffffe000748b488 与谱系一致）
+- 发行版操作：删除 7 个 Release+tag（r16/r14/r11/r12/r13/sc 单核/sc 全核），保留 raphael-touch-r15（t7）与 ios-rootfs-16.7.16-12；发布 raphael-touch-r17（t9 clean/debug + FLASH-T9.md + T9-SHA256SUMS）
+- 文档：README 状态区改写（t8 回归实证 + t9 待测）、下载表裁剪（t9 推荐 + t7 回退 + rootfs）、刷机指南改指 t9；docs/FLASH-T9.md 入库；worklog 双写
+
+Stage Summary:
+- 根因画像：卡 bootstrap done ⇔ RAPHAEL 编译 ∧（匹配表 kryo470 失配 ∨ 8-CPU ADT）—— t2 是唯一通关组合，两变量随 t9 一并入库，归因可后补隔离
+- t9 一次刷机闭环设计：修好 → 直接锁屏（顺带看触摸）；仍卡 → debug 版拍最后几行即得精确卡点
+- 若 t9 通关：下一步仅改 ADT（无需重编内核）逐级回加 CPU 节点 2/4/8 找死点，恢复 8 核；触摸判读沿用 FLASH-T8.md 树
+
