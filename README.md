@@ -8,17 +8,17 @@
 > 本项目为实验性质，操作会**彻底清空手机全部数据**，严禁在主力机上操作！
 > This project is experimental. Flashing **erases all phone data**. Never use your daily driver.
 
-## 📊 当前状态（2026-10-21, r22/t14）
+## 📊 当前状态（2026-10-21, r23/t15）
 
 | 子系统 | 状态 | 说明 |
 |---|---|---|
 | 引导链 | ✅ 实测可用 | shim → XNU → iOS 锁屏完整启动（`fastboot boot` 免落盘，重启即回安卓引导） |
 | CPU | ✅ 8 核实测 | `8/8 CPUs initialized`（kryo485 匹配表 + PSCI 二次核拉起） |
-| 显示 | ✅ 点亮 + **缩放修复（t14 新）** | 原生 1080×2340 面板；t14 起 iOS 的 1125×2436 画面**整幅缩放**到面板（此前居中裁剪会切掉顶部两角的时间/电量）；`sweetscale=0` 可回退旧行为 |
+| 显示 | ✅ 点亮 + 缩放修复（t14 引入，t15 起随整机验证） | 原生 1080×2340 面板；iOS 的 1125×2436 画面**整幅缩放**到面板（此前居中裁剪会切掉顶部两角的时间/电量）；`sweetscale=0` 可回退旧行为 |
 | 触摸 | ✅ 实测可用 | GT9886 厂商级 bring-up：真寄存器图 + 784 字节面板配置下发（双供应商）+ doze 控制 |
 | 电池 | ✅ 真实读数 | fg-gen4 硬件电量计：真 SOC/电压/电流（影子校验）+ 低电警告 + 时间剩余；**t14 新增充电状态 5 秒快轮询 + 插拔即日志**（APSD 充电器类型 / 输入限流 / 电源路径全落盘） |
-| 亮度 / 息屏 | 🔧 **t14 新增** | DSI DCS 亮度通道（`sweetfb_bright=` 初始亮度，iOS 滑条联动下一轮接入）+ **息屏立即全黑**（面板清屏 + DCS 0x28，替代旧的多步渐暗，`sweetfb_fade=1` 可回退） |
-| USB | 🔧 **t14 新增** | `sweetusb=2` 启用 CDC-ECM USB 网卡：电脑插线即得 `ue0`（192.168.7.2），配合 `tools/sweet-usbnet.sh` 实时看内核日志（UDP 5140），不再需要进 Recovery 拉日志 |
+| 亮度 / 息屏 | 🔧 t14 引入（待实测） | DSI DCS 亮度通道（`sweetfb_bright=` 初始亮度，iOS 滑条联动下一轮接入）+ **息屏立即全黑**（面板清屏 + DCS 0x28，替代旧的多步渐暗，`sweetfb_fade=1` 可回退）；t14 死在 USB 阶段，这些功能随 t15 首测 |
+| USB | 🔧 t15 修复（待实测） | t14 首开 `sweetusb=2` 即整机冻结：**raphael 的 USB 控制器是 DWC_usb31**（GSNPSID 0x33313130，非上游验证过的经典 DWC3 v3.20a），Linux 要求软复位后等 ≥50ms 时钟域同步，旧代码 1ms 就发端点命令→总线挂死。t15：VBUS 前置 + 100ms 同步 + 每阶段面包屑日志 |
 | GPU | ❌ 无驱动 | 界面为 CPU 软渲染，滑动卡顿属正常 |
 | Wi-Fi / 蓝牙 / 相机 / 音频 / 传感器 / 基带 | ❌ 未开始 | — |
 
@@ -34,8 +34,8 @@
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-t14-display-clean.img` | **当前首刷推荐（r22）**：显示缩放修复 + 即时息屏 + 亮度通道 + 充电状态快轮询 + USB 网卡/实时日志（`sweetusb=2`） |
-| `raphael-t14-display-debug.img` | r22 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
+| `raphael-t15-usbfix-clean.img` | **当前首刷推荐（r23）**：USB 挂死修复（DWC31）+ SPMI 串行化 + t14 全部功能（显示缩放/即时息屏/亮度通道/充电快轮询/USB 网卡） |
+| `raphael-t15-usbfix-debug.img` | r23 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
 | `raphael-t7-touchfix-clean.img` | 回退/对照（SWEET 编译，已知可启动，触摸死） |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷，**rootfs 无需重刷**，与 t 系列内核通用） |
 
@@ -46,8 +46,9 @@
 t7-clean:  91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe （回退用，已知可启动）
 t12-clean: 3725736f0773ede73b59a35d1cabddc92decbc58aaa37f8a375fa09d46459c6b （触摸闭环）
 t13-clean: 3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f
-t14-clean: 3374ac69efb17155de6a61792e5753053c25669317bb5464aa5fa284e8da3a3c
-t14-debug: 51cb98e38f5c14c74e6fad877d938b489f4bebc49ca4570d0f740237c95c4eab
+t14-clean: 3374ac69efb17155de6a61792e5753053c25669317bb5464aa5fa284e8da3a3c （USB 挂死，勿刷）
+t15-clean: c3abc77eee9e0ccd54349a45cbb083644855e4912a76bef482beccb54a850c90
+t15-debug: a4e7f776caca124cc47cd917eaf63f9458d8caee68dbcf0fe2324abc94bb5de2
 ```
 
 ---
@@ -132,7 +133,7 @@ fastboot boot 最新版的-clean镜像.img
 
 - 注意：引导后需等待 **4-8 分钟**，屏幕会出现 iOS 锁屏界面。只要机身微热，绝对不要提前强制重启。
 - 由于无 GPU 驱动，界面基于 CPU 软渲染，滑动会卡顿（正常现象）。触摸已适配（如个别批次失灵请回报日志）。
-- t14 新增：息屏应**立即全黑**（不再慢慢变暗）；顶部时间/电量应完整显示（不再被切掉）；插数据线到电脑后，主机可识别出 USB 网卡（配合 `tools/sweet-usbnet.sh` 实时看日志）。
+- t15 预期：息屏应**立即全黑**；顶部时间/电量完整显示；插数据线后电脑枚举出 USB 网卡（`tools/sweet-usbnet.sh` 实时看日志）。**刷前先彻底关机一次**（长按电源 10 秒以上再进 fastboot）——t14 崩溃后 PMIC 坏状态会跨热重启保留，冷启动清除。
 - **USB 实时日志（新）**：电脑端 `sudo tools/sweet-usbnet.sh`（Linux/Mac），脚本会配置 192.168.7.1 并用 `nc -ukl 5140` 接收实时内核日志——以后排查问题不用再进 Recovery。
 
 ---
@@ -162,23 +163,24 @@ adb pull /tmp/sweet-log.bin
 
 > ⚠️ Experimental. Flashing **erases all data** — never on a daily driver. The project only overwrites `userdata`; you can return to Android anytime with MiFlash + the official K20 Pro fastboot package.
 
-## Status (2026-10-21, r22/t14)
+## Status (2026-10-21, r23/t15)
 
 - ✅ Boot chain proven on device: shim → XNU → iOS lock screen (`fastboot boot`, nothing permanent)
 - ✅ All 8 cores (`8/8 CPUs initialized`)
-- ✅ Display: native 1080×2340 panel; **new in t14** the 1125×2436 iPhone-X frame is now **scaled** to the panel instead of center-cropped (time/battery corners no longer cut off; `sweetscale=0` reverts)
+- ✅ Display: native 1080×2340 panel; the 1125×2436 iPhone-X frame is **scaled** to the panel instead of center-cropped (t14; first real test in t15 — t14 died in USB init before userspace)
 - ✅ Touch (GT9886 vendor-grade bring-up, confirmed working)
-- ✅ Battery: real fg-gen4 hardware gauge (SOC/voltage/current, shadow-verified); **new in t14** 5-second charger-input polling with APSD/ICL/power-path transition logging
-- 🔧 New in t14: brightness DCS channel (`sweetfb_bright=`; iOS slider hookup next round) and **instant screen-off** (panel clear + DCS 0x28; `sweetfb_fade=1` restores the old fade)
-- 🔧 New in t14: USB — `sweetusb=2` brings up a CDC-ECM USB Ethernet gadget (`ue0`, 192.168.7.2). Run `tools/sweet-usbnet.sh` on the PC and watch the **live kernel log** (UDP 5140) — no more recovery dances to pull logs
+- ✅ Battery: real fg-gen4 hardware gauge (SOC/voltage/current, shadow-verified) + 5-second charger-input polling with APSD/ICL/power-path transition logging
+- 🔧 Brightness DCS channel (`sweetfb_bright=`) and **instant screen-off** (panel clear + DCS 0x28; `sweetfb_fade=1` restores the old fade) — landed in t14, first real test in t15
+- 🔧 USB (t15 fix, pending test): t14 enabled the gadget and froze the system — **raphael's controller is a DWC_usb31** (GSNPSID 0x33313130, not the classic DWC3 3.20a the code was proven on), and Linux requires a ≥50 ms clock-domain settle after the device soft reset. t15 moves the VBUS override first, adds the 100 ms settle, and prints a breadcrumb at every init phase
+- 🔧 SPMI: all observer commands (keys/census/battery) now go through one global gate, Linux-style; GPIO census is opt-in (`sweetcensus=1`)
 - ❌ No GPU driver (CPU software rendering, UI is slow), no Wi-Fi/BT/camera/audio/modem yet
 
 ## Downloads (Releases)
 
 | File | Purpose |
 |---|---|
-| `raphael-t14-display-clean.img` | **Recommended (r22)**: display scaling fix + instant off + brightness channel + fast charger polling + USB network/log |
-| `raphael-t14-display-debug.img` | Same, with the on-screen console always on (photograph the last lines if it hangs) |
+| `raphael-t15-usbfix-clean.img` | **Recommended (r23)**: USB DWC31 wedge fix + SPMI serialization + all t14 features (display scaling, instant off, brightness, charger polling, USB network) |
+| `raphael-t15-usbfix-debug.img` | Same, with the on-screen console always on (photograph the last lines if it hangs) |
 | `raphael-t7-touchfix-clean.img` | Known-good fallback |
 | `ios16-root.simg.part-00~05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs (16G HFS+ sparse image; no need to re-flash when kernels update) |
 
@@ -194,7 +196,7 @@ adb pull /tmp/sweet-log.bin
    ```
    Keep these somewhere safe — they can unbrick the phone.
 3. **Flash the rootfs** (~10–20 min): `fastboot -S 512M flash userdata ios16-root.simg`. If Xiaomi fastboot appears frozen afterwards, force-restart into fastboot with **Power + Vol-**; the data is intact.
-4. **Boot**: `fastboot boot raphael-t14-display-clean.img`, wait **4–8 minutes** for the lock screen. The body staying warm is normal; do not force-reboot early. Touch works; expect software-rendering lag.
+4. **Boot**: `fastboot boot raphael-t15-usbfix-clean.img`, wait **4–8 minutes** for the lock screen. The body staying warm is normal; do not force-reboot early. Touch works; expect software-rendering lag. **Power the phone fully off before fastboot** after any crash/abnormal boot — PMIC state survives warm reboots.
 
 ## Troubleshooting
 
@@ -217,4 +219,4 @@ adb pull /tmp/sweet-log.bin
 - [MakrSas/ios-topaz](https://github.com/MakrSas/ios-topaz) — sibling port (Redmi Note 12 4G) used for cross-checking
 - The XNU kernel and iOS userspace are © Apple Inc. This project is for research only.
 
-> 判读树与取证命令：Release `raphael-touch-r22` 内 `FLASH-T14.md`（历史判读树 FLASH-T6~T13 保留在 docs/）。
+> 判读树与取证命令：Release `raphael-touch-r23` 内 `FLASH-T15.md`（历史判读树 FLASH-T6~T14 保留在 docs/）。

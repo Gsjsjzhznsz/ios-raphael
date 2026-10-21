@@ -122,6 +122,40 @@ restarts the device controller; boot-arg `sweetusb=2` starts it, `sweetusb=1`
 (default) reports state only. The stock boot.img cmdline confirms the
 controller: `androidboot.usbcontroller=a600000.dwc3`.
 
+## USB IP version is DWC_usb31, not classic DWC3 (patch 0099, t14 post-mortem)
+
+t14 enabled `sweetusb=2` and froze the whole system right after
+`soft reset done after 1 ms` (no timeout print even reached the console; the
+second `fastboot boot` then stalled the SPMI GPIO census at PM8150B). Both
+facts pinned against the Linux kernel source:
+
+- **GSNPSID on raphael reads `0x33313130`** — Linux `dwc3_core_is_valid()`
+  classifies `0x3331xxxx` as **DWC_usb31** (the USB 3.1 IP; the version then
+  comes from DWC3_VER_NUMBER, not GSNPSID). The upstream sweet phone's
+  controller is the **classic DWC3 v3.20a** (`0x5533320a`, documented in the
+  upstream NOTES) — the USB gadget code was only ever proven on that IP.
+- **Linux `dwc3_core_soft_reset()` has a DWC31-only rule**: after
+  `DCTL.CSFTRST` clears, the device/endpoint clock domains must
+  re-synchronize before any endpoint access — "for DWC_usb31 1.80a and
+  prior, once DCTL.CSFRST bit is cleared, we must wait at least 50ms before
+  accessing the PHY domain" (SM8150 is 2018 silicon = early DWC31). The
+  t14 code issued ep0 DEPCMDs ~1 ms after the reset → bus wedge → whole
+  system freeze (the config-NoC path is shared by all CPU clusters).
+- Fix in 0099: QSCRATCH VBUS override moved **before** the reset (Linux
+  dwc3-qcom does the override at probe; the wrapper registers survive the
+  core reset), a **100 ms post-reset settle** (2× the Linux requirement),
+  and a breadcrumb print between every init phase (ue0 → QSCRATCH → VBUS
+  override → soft reset → settle → event buffer → ep0 commands → setup TRB
+  → running) so any future wedge is localizable from a photo of the screen.
+- The SPMI stall: keys thread (20 ms), GPIO census and the t14 5 s battery
+  poll all issued observer commands with no mutual exclusion, while Linux
+  serializes **every** pmic-arb command with one spinlock. After a crash the
+  PMIC keeps its state across warm reboots (no power cycle), so the census
+  could grind against a wedged SID 2 (PM8150B). Patch 0100 adds one global
+  command gate for all users and makes the census opt-in (`sweetcensus=1`).
+  **Operational rule: after any crash, power the phone fully off before the
+  next `fastboot boot`.**
+
 ## What still needs device validation (bring-up order)
 
 1. `fastboot boot` of the shim image (header v1 + appended SM8150 v2 DTB).

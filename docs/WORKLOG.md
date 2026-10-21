@@ -360,3 +360,27 @@ Stage Summary:
 - 四项用户诉求全部给出修复或通道：缩放（裁剪→整幅缩放）、息屏（7 步渐暗→即时全黑+DCS 0x28）、亮度（首次打通 DSI DCS 通道，iOS 滑条入口下一轮凭带值 selector 日志定位）、充电状态（5s 响应+全输入路径落盘）；USB（sweetusb=2 网卡+实时日志）
 - t14 判决树（FLASH-T14.md）：A 显示（时间/电量完整=缩放胜）、B 息屏/亮度（立即黑=胜；拖滑条后回报带值 selector 日志）、C 充电（插线 ≤5s 闪电=胜；plugin=1 但 DISABLE → 回报完整行，下一步查充电禁用写通道）、D USB（枚举+ping 通=胜）
 - 兜底：`sweetscale=0`/`sweetfb_fade=1`/`sweetusb=1` 全部可回退；t13/t7 可随时引导
+
+---
+Task ID: 18
+Agent: Super Z (main agent)
+Task: t14 实测解读（USB 软复位后整机冻结 + 二次启动普查卡死）→ DWC_usb31 根因定位 → 0099/0100 → t15/r23 发布
+
+Work Log:
+- 用户回报 t14 现场（屏幕控制台）：`ue0 192.168.7.2/24 up (err 0)` → `soft reset done after 1 ms, GCTL 0x00112001 DCFG 0x00480000` 后再无输出、整机冻结重启；第二次 fastboot boot 后按键普查打印到 aplid=297（PM8150B GPIO）停住
+- 排除法定位（全部读源码实证）：sweet_keys/sweet_touch/sweet_usb_probe 在同一 UFS 初始化线程顺序执行；IOWatchdog 是"接受签到从不触发"的桩；XNU delay()=微秒 → DEPCMD 超时打印毫秒级就会出，没出 = 总线级挂死而非命令超时；sweet_spmi_read 与普查用不相交 APID 通道
+- 决定性证据（拉取上游 ios-sweet NOTES.md + Linux 主线 dwc3/core.c）：
+  1) 上游 sweet 真机验证 USB 的控制器是**经典 DWC3 v3.20a**（GSNPSID 0x5533320a，NOTES 原文），0073/0074 在该 IP 上全链跑通；raphael 实测 GSNPSID=0x33313130，Linux `dwc3_core_is_valid()` 按 0x3331xxxx 分类为 **DWC_usb31（USB 3.1 IP，版本号在 VER_NUMBER 寄存器）**
+  2) Linux `dwc3_core_soft_reset()` 对 DWC31 的专门规则：CSFTRST 清除后设备/端点时钟域要重新同步，≤1.80a 必须再等 ≥50ms 才能访问 PHY/端点域（SM8150=2018 早期 DWC31）；t14 代码复位后 ~1ms 就发 ep0 DEPCMD → 挂死（config-NoC 全核共享 → 整机冻结）
+  3) 普查卡死定性：按键线程(20ms)/普查/电池 5s 轮询三个观察命令源无互斥，而 Linux 对整个 pmic-arbiter 一把锁串行；崩溃后 PMIC 坏状态跨热重启保留 → 二次启动普查"假死机"
+- 0099-raphael-usb-dwc31-sync.patch：QSCRATCH VBUS 强制提前到软复位前（Linux dwc3-qcom probe 顺序，wrapper 寄存器不受核复位影响）+ 软复位后 100ms 时钟域同步等待（Linux 50ms 要求×2）+ 每阶段面包屑日志（ue0/QSCRATCH/VBUS/软复位/settle/事件缓冲/ep0 命令/setup TRB/running）——再挂死拍照即定位
+- 0100-raphael-spmi-cmdgate-census.patch：sweet_spmi.c 新增全局命令门 sweet_spmi_cmdgate()（keys_read 与 sweet_spmi_read 的观察事务全程持门，Linux 式单锁串行）+ GPIO 普查改 sweetcensus=1 可选（默认跳过并打 census skipped 行，诊断使命已完成）
+- 工程流程：work/xnu 重建 t14 规范基（0096 快照+0097+0098，git apply --reverse 验证一致后提交）；apply_t15.py 字节级替换（无缩进漂移）；往返 apply 校验通过；cf75018 push → CI run 39613027135 success（红闸门通过）
+- 内核 9640a81c…（15 项标记验证全过：DWC31 settle/settle 面包屑/census skipped/sweetcensus + t13/t14 血统标记 + kryo470 已消）；t15 六重校验全过（ANDROID!v2/shim==t7/DTB==t7/ADT 8 核 12588B/cmdline 330B/entry 0xfffffe000748f488）
+- 发布 r23（t15 clean c3abc77e… / debug a4e7f776… + FLASH-T15.md + T15-SHA256SUMS.txt）+ 删 r22；发行版 = rootfs + t7 + r23
+- README（中英双语状态区/下载表/引导注意事项：崩溃后先彻底关机再 fastboot）+ NOTES.md 存档 DWC31 差异与 Linux 依据 + FLASH-T15 入库
+
+Stage Summary:
+- 双根因闭环：USB 挂死 = DWC_usb31 与经典 DWC3 的复位后同步差异（Linux 依据原文级对齐）；普查卡死 = SPMI 观察命令无全局串行 + 崩溃后 PMIC 跨热重启状态残留
+- t15 判决树：面包屑走到 running + 主机枚举 + ping 192.168.7.2 = USB 全胜；停在哪条面包屑之后 = 该步寄存器操作挂死（拍照即可定位）；t14 的显示/息屏/亮度/充电功能随 t15 首测
+- 运维规则确立：任何崩溃后先长按电源彻底关机，再进 fastboot（清 PMIC 跨重启状态）
