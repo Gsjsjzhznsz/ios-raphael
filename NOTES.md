@@ -395,3 +395,21 @@ from a hardware/firmware-side path (RPM, TZ, or NoC error escalation).
 Fingerprint to collect if it recurs: the freeze->reboot delay in
 seconds (fixed = watchdog, variable = error escalation). Fixing the
 wedge makes the question moot.
+
+## Release asset uploads: '@' is not optional (r24 incident)
+
+The r24 publish script called curl with `--data-binary <path>` instead
+of `--data-binary @<path>`: curl then sends the path STRING as the
+request body, and GitHub happily stores a 46-56 byte text file as the
+"asset" - the upload API returns state=uploaded, so a state-only check
+passes and the corruption is silent. The user caught it by the file
+sizes on the release page (all four assets ~50 bytes instead of 17 MB).
+Rules learned:
+- ALWAYS `--data-binary @file` (or use gh release upload).
+- ALWAYS verify the API response's `size` field equals the local file
+  size (fix_r24_assets.py), not just state=uploaded.
+- After deleting and re-uploading an asset under the same name, the
+  browser_download_url can serve the STALE object from the CDN edge for
+  a minute or two (warmed caches linger). Verify via the asset API
+  endpoint (Accept: application/octet-stream, by asset id) which always
+  returns the real stored bytes; the public URL catches up shortly.

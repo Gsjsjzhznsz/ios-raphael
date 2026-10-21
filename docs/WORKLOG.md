@@ -407,3 +407,20 @@ Stage Summary:
 - t15 定性：USB 楔死定位到第一条端点命令的寄存器读（总线级），根因=PHY 挂起时钟门控，0099 settle 属治标
 - t16 判决：SUSPHY cleared → canary → ep0 armed → running(DSTS) → 锁屏 → 主机枚举 ECM + ping 192.168.7.2 = USB 全胜；判读树与两级兜底路径就绪
 - 证据链方法沉淀：环绕控制台几何、照片像素级证伪、环日志 kprintf 盲区——后续轮次取证基建
+
+---
+Task ID: 20
+Agent: Super Z (main agent)
+Task: 用户报告"t16 发行版文件异常" → r24 资产修复
+
+Work Log:
+- 现象确认（GitHub API）：r24 全部 4 个资产为 46-56 字节（应为 17,342,575 / 17,342,575 / 5,527 / 283），下载计数全 0（无人中招）
+- 根因（下载坏资产取证 + 对照 release_r24.py）：资产内容 = 本地文件路径字符串本身——curl `--data-binary` 缺 `@` 前缀，把路径文本当请求体上传；API 返回 state=uploaded，脚本仅校验 state 故静默放行；r22 脚本用 `@{path}` 正确，属 r24 脚本笔误
+- 修复（scripts/fix_r24_assets.py）：预检本地哈希（与 T16-SHA256SUMS 逐字节一致）→ 删除 4 个坏资产 → `--data-binary @file` 重传 → API 响应 size 字段与本地尺寸逐一相等
+- 验证双通道：资产 API 端点（按 id，Accept: octet-stream）回读 4 文件 sha256 与本地全等；浏览器下载 URL 初测两个文本文件仍返回 CDN 缓存的旧坏对象 → 75 秒后复测全部刷新为正确内容（镜像哈希 30a978e1…/3584be8e…，ANDROID! 魔数正确）
+- 预防：release_r24.py 两处 `--data-binary` 补 `@` + 注释（防模板继承）；NOTES.md 存档三条规则（@ 必须、size 必校验、CDN 陈旧缓存与资产 API 端点验证法）
+
+Stage Summary:
+- r24 发行版完全修复：4 资产正确在位，公开 URL 可下载，哈希与 README/T16-SHA256SUMS 一致
+- 用户可直接 fastboot boot raphael-t16-susphy-clean.img（或 debug 版）继续 t16 判读树（SUSPHY cleared → canary → ep0 armed → running → 锁屏 → 主机枚举 ECM + ping 192.168.7.2）
+- 流程防线：发布脚本上传后必须校验 size 字段；CDN 缓存陈旧用资产 API 端点辨别
