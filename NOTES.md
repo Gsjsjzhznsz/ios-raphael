@@ -509,3 +509,61 @@ vote. If t17 still freezes at/near the hsphy pre-state print, or the
 readbacks look wrong, the LDOs were dropped at the ABL handoff and the
 next round needs RPMh LDO voting (RSC 0x18220000 / TCS 0x18220d00 facts
 already in this file).
+
+## t17 verdict (0102 femto ran, rails were never up) -> t18 RPMh LDO votes
+
+Three-band VLM transcription of the freeze photo (crop 3 bands, 2x upscale;
+full 72-row window). The screen held BOTH boots at once: the ~45 s reset is a
+WARM reset, the framebuffer survives it, and the early console resumes at the
+first free row - so rows 1-13 are boot A's tail and rows 14-72 are boot B.
+Geometry lesson: a photo can span two boots; before decoding a screen, check
+whether the top lines are chronologically impossible for a single boot.
+
+- Boot A: femto sequence RAN and completed - but "hsphy up (femto)" read back
+  repeating-byte garbage: COMMON1 0x3b3b3b3b, REFCLK 0x02020202, CTRL2
+  0x00000606 (pre-state: CTRL2 0x06666606), COMMON0 0x00000000. Repeating-byte
+  patterns = unpowered register bus; none of the 15 femto writes stuck. The
+  canary read still worked (DWC3 wrapper alive), and the ep0 command write
+  wedged a CPU exactly like t16 (no UTMI clock). Boot continued on other CPUs
+  to the lock screen; at T+45s the SWEET TOUCH deferred start (45 s countdown,
+  boot-arg sweettouchdelay) fired its SE19/TLMM/I2C bus work on the wedged
+  system and the hardware side (RPM/TZ/NoC) escalated to a reset. The t16
+  "~40 s" and t17 "~45 s" reboots are the same touch-start trigger.
+- Boot B: same sequence, died EARLIER - inside the pre-state printf (the line
+  truncates at "...CTR"): the reads completed (C argument evaluation precedes
+  the call - the printed text proves all four reads returned), and the CPU
+  took the async bus error mid-print. A printf frozen mid-literal means an
+  asynchronous exception landed during console output, not a wedged register
+  read.
+- Root cause (final): Linux qcom_snps_hsphy_init() enables vdda-pll/vdda33/
+  vdda18 FIRST - regulator_bulk_enable is its very first statement, before
+  the clocks, before the BCR pulse, before the register sequence. The 0102
+  port skipped exactly that step. Everything else in the driver port was
+  correct and is retained.
+- Raphael rail map (mainline raphael patchew v2 DTS, all HPM):
+    vdda33  = vdda_usb_hs_3p1 = vreg_l2a_3p1  = ldoa2  @ 3072 mV
+    vdda-pll= vdd_usb_hs_core = vreg_l5a_0p875= ldoa5  @  880 mV
+    vdda18  = vdda_usb_hs_1p8 = vreg_l12a_1p8 = ldoa12 @ 1800 mV
+  (all three on PM8150 = the "a" PMIC; cmd-db VRM names follow ldo+letter+
+  number, cf. SWEET's ldoc11 on PM6150L.)
+- 0103 implementation: sweet_rpmh.c was ALREADY compiled for raphael (the
+  RAPHAEL build defines ARM64_BOARD_CONFIG_SWEET too - Task-2 makeflags), so
+  the fix is a board-aware vreg guard (raphael table ldoa2/ldoa5/ldoa12 with
+  tight voltage windows; SWEET keeps ldoc11) + genericized print strings.
+  Geometry verified against the vendor sm8150.dtsi in work/ref: apps_rsc
+  drv-id 2, ACTIVE_TCS 2 / SLEEP_TCS 3 / WAKE_TCS 3, RSC 0x18220000, TCS
+  0x18220d00, and cmd_db locator qcom,cmd-db@c3f000c reg <0xc3f000c 8> -
+  byte-identical to the SWEET constants. Nothing in the TCS discipline
+  changed.
+- Failure-mode engineering: any failed vote now ABORTS gadget start cleanly
+  before the BCR/ep0 steps ("LDO vote failed ... no ep0 wedge"). Reading a
+  dead PHY returns garbage but survives; the ep0 command WRITE wedges the
+  boot CPU. So every future failure = stable lock screen + a photo of the
+  RPMH prints, instead of the 45 s reboot loop. Vote-failure taxonomy for
+  the next round: lookup matches=0 (cmd-db naming), no empty idle ACTIVE
+  TCS / conflicting inherited request (ABL leftovers), timeout (RPM not
+  answering -> SPMI direct LDO programming fallback).
+- Marker discipline (t18 packaging): ldoc11 must be ABSENT from the raphael
+  binary (preprocessed out by the board-aware guard) while ldoa2/ldoa5/
+  ldoa12, "hsphy post-LDO COMMON0", "gadget start aborted before PHY reset"
+  and "not a supported raphael USB LDO request" must be present.
