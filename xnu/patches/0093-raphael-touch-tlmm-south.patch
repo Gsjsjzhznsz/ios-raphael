@@ -1,0 +1,54 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 98d82d0..7929dc7 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -27,13 +27,22 @@ extern void sweet_hid_touch(int finger, int down, int x, int y);
+ void sweet_touch_init(void);
+ 
+ #if defined(ARM64_BOARD_CONFIG_RAPHAEL)
+-/* SM8150: TLMM is one block at 0x03000000; touch is SE19 @ 0xc88000
++/* SM8150: TLMM base 0x03000000 is split into per-tile blocks; a GPIO
++ * register address = tile base + 0x1000 * global GPIO id (pinctrl-sm8150.c:
++ * SOUTH 0x00D00000, NORTH 0x00900000, EAST 0x00500000, WEST 0x00100000).
++ * Every touch GPIO (54/57/58/98/100/122) is SOUTH-tile, so the GPIO window
++ * starts at 0x03000000 + 0x00D00000 = 0x03D00000. Mapping the TLMM base
++ * itself (as this driver did from 0083 through t10) put every mux, output,
++ * rail-power and reset write into an unimplemented region: the touch IC
++ * never powered on, SDA/SCL never muxed to qup19 -- exactly the "bus
++ * idle/live all zero" signature in the t10 log. Touch is SE19 @ 0xc88000
+  * (GCC_QUPV3_WRAP2_S2: vote BIT(6)@0x52014, RCG 0x1e3a8). Power via TLMM
+  * GPIOs per raphael-sm8150.dtsi: vdd 3v3 = GPIO98, avdd 1v8 = GPIO100,
+  * reset = GPIO54, IRQ = GPIO122, SDA/SCL = GPIO57/58 (qup19). */
+ #define TOUCH_SE_PA      0x00c88000u
+ #define TOUCH_GCC_PA     0x00100000u
+-#define TOUCH_NORTH_PA   0x03000000u
++/* 0x80000 covers global ids 0..127: gpio122 IN_OUT ends at 0x7a004. */
++#define TOUCH_GPIO_PA    0x03D00000u
+ #define TOUCH_GCC_VOTE   0x52014u
+ #define TOUCH_RCG       0x1e3a8u    /* wrap2_s2 cmd_rcgr (SE19) */
+ #define TOUCH_VOTE_MASK ((1u << 1) | (1u << 2) | (1u << 6)) /* s_ahb|m_ahb|s2 */
+@@ -47,7 +56,7 @@ void sweet_touch_init(void);
+ #else
+ #define TOUCH_SE_PA      0x00a84000u
+ #define TOUCH_GCC_PA     0x00100000u
+-#define TOUCH_NORTH_PA   0x03900000u /* DT TLMM + NORTH (0x500000) */
++#define TOUCH_GPIO_PA    0x03900000u /* DT TLMM + NORTH (0x500000) */
+ #define TOUCH_GCC_VOTE   0x5200cu
+ #define TOUCH_RCG       0x18148u    /* wrapper1 LOCAL S1 = global SE7 */
+ #define TOUCH_VOTE_MASK ((0x0fu << 18) | (1u << 23))
+@@ -771,12 +780,12 @@ touch_thread(void *arg, wait_result_t result)
+         (void)PE_parse_boot_argn("sweettouchdelay", &delay_s, sizeof(delay_s));
+         printf("SWEET TOUCH: starting in %u s\n", delay_s);
+         touch_wait(delay_s * 1000u);
+-        printf("SWEET TOUCH: mapping GCC/TLMM/SE7\n");
++        printf("SWEET TOUCH: mapping GCC/TLMM-south/SE7\n");
+         st.gcc = ml_io_map(TOUCH_GCC_PA, 0x60000);
+ #if defined(ARM64_BOARD_CONFIG_RAPHAEL)
+-        st.gpio = ml_io_map(TOUCH_NORTH_PA, 0x80000);
++        st.gpio = ml_io_map(TOUCH_GPIO_PA, 0x80000);
+ #else
+-        st.gpio = ml_io_map(TOUCH_NORTH_PA, 0x5b000);
++        st.gpio = ml_io_map(TOUCH_GPIO_PA, 0x5b000);
+ #endif
+         st.se = ml_io_map(TOUCH_SE_PA, 0x4000);
+         if (!st.gcc || !st.gpio || !st.se) {
