@@ -256,3 +256,26 @@ Stage Summary:
 - t9 一次刷机闭环设计：修好 → 直接锁屏（顺带看触摸）；仍卡 → debug 版拍最后几行即得精确卡点
 - 若 t9 通关：下一步仅改 ADT（无需重编内核）逐级回加 CPU 节点 2/4/8 找死点，恢复 8 核；触摸判读沿用 FLASH-T8.md 树
 
+
+---
+Task ID: 13
+Agent: Super Z (main agent)
+Task: t9 实测解读（触摸仍死 + 卡顿）→ 触摸全链路静态审计 + t10（0091 总线诊断 + 8 核回归）发布
+
+Work Log:
+- t9 日志解码（sweet-log.bin 4MiB 环）：t9 完整启动进锁屏（bootstrap-done 修复成立）；`SWEET CPU: requested=8 selected=1` = 单核 → "很卡"定性为 t2 配方副作用；按键 HID 全通
+- 触摸判决行：probe 0x5d err=60（ETIMEDOUT）seen=0x40000000（TX 水位触发、2 字节入 FIFO）tx=2 rx=0 status=0（无活动命令）+ abort 干净（无 abort failed、dead=0）→ 序列器活着但总线上零活动；probe ST FTS 0x49 err=5 tx=0 seen=0 → 命令根本没发出
+- Bug 实锤（0086 遗留）：touch_msg_run 的 `nt > 3 → EIO(5)` 硬上限拒绝 5 字节 ST FTS 命令（0xFA+4 地址字节）；touch_stfts 运行时 nt=1+nr=8 同样撞 `(nt && nr)` 拒绝 —— ST FTS 探针与轮询全是结构性死代码
+- 全链路静态审计（对齐 Linux torvalds 源码 + Lineage raphael vendor 源码 + 原厂 DTB）：SLV_ADDR_SHFT=9/STOP_STRETCH=BIT(2)/I2C 长度寄存器 0x26c/0x270/打包值 0x7f8fe,0xffefe（=geni_se_config_packing(8,4,msb_to_lsb=TRUE) 正是 Linux I2C 取值）/初始化序列（CGC/OUTPUT_CTRL/FIFO 模式/水位/SER_CLK_EN/SCL 计数）逐项等价 —— 驱动配置无错
+- 硬件事实三级验证：原厂 DTB pinctrl（qupv3_se19_i2c_active 绑 i2c@0xc88000）、vendor sm8150-qupv3.dtsi（SE19@0xc88000 = wrap2_s2）、vendor sm8150-pinctrl.dtsi（qup19 i2c = gpio57+gpio58）、pinctrl-sm8150.c PINGROUP(57/58) func2=qup19、vendor raphael-sm8150.dtsi goodix@5d（reset=54 irq=122 vdd=98 avdd=100 power-on-delay=300ms）—— 全部与 SWEET 驱动一致；板级触摸节点在 dtbo（基础 DTB 无触摸节点）
+- 结论：嫌疑收敛物理层 —— ① avdd（GPIO100）上拉轨没真正起来（ios=0 但采自配置前，无证据力）② 总线被拖死。需要配置后电平证据
+- 0091 补丁（a99dc24，CI run 39572579833 success，内核 c8fdc459）：冷上电循环（拉住 reset，98/100 双轨 off 100ms → on）；`bus idle`（vdd/avdd/sda/scl/reset/ios，复位拉住时）+ `bus live`（复位释放+300ms 后）两条判读行；TX 上限 3→6 + 双字 FIFO 打包；touch_stfts 拆写+读两条消息（burst 上限 10 事件保 nr≤90）；停止行带 ios 终值；往返 apply 自检通过
+- t10 打包（scripts/t10_package.py）：t7 骨架 + 0091 内核 + t8 的 8 核 ADT（f50510e0，12588B，从 t8 镜像提取并解析验证 8 CPU 节点）；六重校验全过（ANDROID!v2/shim/DTB==t7/ADT 8 核/cmdline 330B==t7/markers/entry 0xfffffe000748b488）；clean e8cd3bc1… debug 4cc1e957…
+- 8 核回归的安全性论证：t7（SWEET 编译）用同一个 8 核 ADT 正常启动 → ADT 的 8 核拓扑本身无害；t8 卡死根因 = kryo470 失配（0090 已入库）而非 CPU 数
+- 发布 raphael-touch-r18（419348086）：t10 clean/debug + FLASH-T10.md + T10-SHA256SUMS；README 状态区/下载表/刷机指南全面更新；发行版现为 rootfs + r15/t7 + r17/t9 + r18/t10
+
+Stage Summary:
+- t9 两定性：触摸 0x5d 超时=总线零活动（软件全对→物理层）；卡=单核
+- t10 一次刷机三信息：8 核回归成败 + 总线电平判读（idle/live 分离上拉轨 vs 引擎时钟两大理论）+ ST FTS 真探针
+- 判读树：bus idle sda/scl=1 → 嫌疑转串行时钟（DFS/RCG）；=0 → avdd 供电轨问题；probe 0x5d err=0 → 触摸活
+- 若 t10 卡 bootstrap → 8 核 ADT 是第二变量 → 退 t9，下轮 2/4 核折半

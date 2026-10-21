@@ -4,9 +4,9 @@
 
 > ⚠️ 【警告】本项目尚未经过全流程实测，仅供极客测试。操作会彻底清空手机数据，严禁在主力机上操作！
 
-**当前状态（2026-10-21, r17/t9）**
+**当前状态（2026-10-21, r18/t10）**
 
-- ✅ XNU 早期引导链路实机验证：shim → 内核加载 → VM/zone（diag5 定格至 `bootstrap done` —— 现判读为与 t8 同卡点，待 t9 复核）
+- ✅ XNU 早期引导链路实机验证：shim → 内核加载 → VM/zone → **t9 实机完整启动进锁屏**（kryo485 + 1-CPU ADT 修复成立，bootstrap-done 回归关闭）
 - ✅ 显示：raphael 原生 1080x2340 面板点亮（AppleCLCD，shim 直写 ABL splash 帧缓冲）
 - ✅ USB：内核枚举 `1209:0001 Sweet iOS`；看门狗已解除（日志定格不重启）
 - ✅ rootfs 管线：iOS 16.7.16 → 16G HFS+ 镜像（CI 全自动，见 Releases）
@@ -14,17 +14,18 @@
 - ✅ **锁屏点亮（原生 4 系内核栈）**：swap-test t2（我们内核 + 修复 ADT：1 CPU + fbcon 0x9a4000 + /product 嫁接）已在实机进入 iOS 锁屏，用户态服务全面跑通（raphael-swaptest-r11 Release）。
 - ✅ **8 核 + 按键实证（r15 日志）**：`SWEET CPU: 8/8 CPUs initialized`；按键事件已投递用户态（`SWEET HID: key ... (1 clients)`）
 - 🔧 **触摸时钟根因（0089，t6 日志实锤）**：wrap2 s_ahb（0x1e008）是 HWCG 门控分支（健康时 CLK_OFF 常驻 1），Linux 对其跳过检查，旧代码死等清零→静默退出；现按 Linux 语义放行
-- 🚨 **t8 回归（r16 实测）**：t8（首个 RAPHAEL 编译内核）卡 `bootstrap done`，t7 正常。复盘实证：历史全部 RAPHAEL 编译内核（diag5/r11-sc/t8）都卡在同一卡点，唯一例外 t2 —— 差异两处且从未隔离：①匹配表 `IONameMatch 'qcom,kryo470'` vs ADT 声明 `kryo485`（t2 只做过二进制就地补丁，未入库）；②t2 ADT 仅 1 个 CPU 节点（逐节点解析实锤：t 系列 ADT 与 t2 的唯一结构差异 = CPU 节点 1→8）。另实证：t5/t6/t7 全部是 SWEET 编译（镜像字符串标记），RAPHAEL 编译从未在 t 系列成功启动过
-- 🚧 **t9（r17）已发布待实测**：t2 配方正式入库 —— 补丁 0090（匹配表 kryo470→485）+ ADT 删 cpu1–7（其余与 t 系列逐字节同源）；debug 版屏幕控制台常开（卡住拍最后几行即可定位）；shim/DTB/cmdline 与 t7 逐字节不变
+- 🔧 **触摸现场（t9 实测定性）**：探针首次真正上车 —— GT9889@0x5d 探针 ETIMEDOUT（序列器活、TX 已入 FIFO、无 DONE/NACK = 总线无活动）；ST FTS@0x49 探针被 3 字节 TX 上限拒绝（纯软件 bug）。全链路静态审计（SE19@0xc88000、qup19=GPIO57/58 func2、vdd=GPIO98/avdd=GPIO100、寄存器/打包/命令编码 = Linux i2c-qcom-geni 逐项对齐）全部正确 → 嫌疑收敛到物理层（上拉轨/总线电平）
+- 🚧 **t10（r18）已发布待实测**：补丁 0091（触摸冷上电循环 + `bus idle`/`bus live` 总线电平判读 + ST FTS 5 字节传输修复）+ **8 核 ADT 回归**（t8 的 f50510e0，修 t9 单核卡顿）；判读树见 docs/FLASH-T10.md
 - 🔧 **R14 结论修正**：所谓"面板 180° 倒置"实为拍摄时手机物理倒持（用户确认）；0088 修订为默认不翻转（`sweettouchflip=1` 可强制），触摸方向无需补偿
-- 🚧 **熄屏渐慢**：无 GPU、CPU 软渲染的锁屏淡出动画被拉长（display off 路径正常）；待 t9 回报后再评估 `sweetfb_hz` 对照
+- 🚧 **卡顿（t9 实测）**：单核是 t2 配方的副作用；t10 恢复 8 核应消失。**熄屏渐慢**：t10 已带 60Hz，待回报评估
 
 ## 下载（Releases）
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-t9-bootstrapfix-clean.img` | **当前首刷推荐（r17）**：补丁 0090（匹配表 kryo485 入库）+ 1-CPU ADT（t2 配方）+ 0089；cmdline 与 t7 逐字节一致 |
-| `raphael-t9-bootstrapfix-debug.img` | r17 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
+| `raphael-t10-touchbus-clean.img` | **当前首刷推荐（r18）**：补丁 0091（触摸冷上电+总线诊断+ST FTS 修复）+ **8 核 ADT 回归**（修卡顿）+ 0090/0089；cmdline 与 t7 逐字节一致 |
+| `raphael-t10-touchbus-debug.img` | r18 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
+| `raphael-t9-bootstrapfix-clean.img` | 回退/对照（r17）：单核但已知可启动（若 t10 卡 bootstrap 退回它并回报） |
 | `raphael-t7-touchfix-clean.img` | 回退/对照：t7（SWEET 编译，8 核，触摸死——RAPHAEL 增量未编入） |
 | `raphael-t7-touchfix-debug.img` | t7 排障版（控制台已关） |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷） |
@@ -33,9 +34,10 @@
 
 ```
 t7-clean: 91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe
-t8-clean: 1bcdfbb9b0aa524a065cdbfd95a832b1535ac36b3a0686022fd1befbb389c7d7 （已被 t9 取代：卡 bootstrap done）
-t9-clean: 371d84e0e934ced88ac549e99b64798d1ff1c86dc14df1ef1ede0fad236d22fe
-t9-debug: d9203c0eaa0ee550aefcfc8d1655d1f4ea299ff600bd8eab87b8efbebaf7014e
+t8-clean: 1bcdfbb9b0aa524a065cdbfd95a832b1535ac36b3a0686022fd1befbb389c7d7 （卡 bootstrap done，已被 t9 取代）
+t9-clean: 371d84e0e934ced88ac549e99b64798d1ff1c86dc14df1ef1ede0fad236d22fe （可启动，单核）
+t10-clean: e8cd3bc126670fdb2cb3bcd5cf4ee1a3f3b572a1ab53d49234dde0c378a2f857
+t10-debug: 4cc1e957d9b84be1a2eb70af669e39d798e189c6aa7a7d630bbe5a2f1cd97a43
 ```
 
 ## 📱 K20 Pro 刷入 iOS 极简指南
@@ -46,9 +48,9 @@ t9-debug: d9203c0eaa0ee550aefcfc8d1655d1f4ea299ff600bd8eab87b8efbebaf7014e
 - 环境：电脑或另一台手机（Termux + `android-tools`，OTG 线连接目标机）已装 adb / fastboot。
 - 文件：
   - `ios16-root.simg.part-00 ~ 05` 及 `CHECKSUMS.txt`
-  - `raphael-t9-bootstrapfix-debug.img`（排障版，首刷；屏幕控制台常开）
-  - `raphael-t9-bootstrapfix-clean.img`（正式版）
-  - `raphael-t7-touchfix-clean.img`（回退用）
+  - `raphael-t10-touchbus-debug.img`（排障版，首刷；屏幕控制台常开）
+  - `raphael-t10-touchbus-clean.img`（正式版）
+  - `raphael-t9-bootstrapfix-clean.img`（回退用，已知可启动）
   - K20 Pro 的 `recovery.img`（OrangeFox，用于备份与取证）
 
 ### 二、合并与校验镜像
@@ -92,19 +94,20 @@ fastboot -S 512M flash userdata ios16-root.simg
 1. **首刷排障版**（屏幕控制台常开）：
 
 ```bash
-fastboot boot raphael-t9-bootstrapfix-debug.img
+fastboot boot raphael-t10-touchbus-debug.img
 ```
 
 - 屏幕滚动内核日志 → 出现 `SWEET UFS:` 行 → 屏幕被文字"画花" = iOS 用户态接管（正常现象，正式版才有干净画面）。
-- 若卡住：**拍下最后几行**发回 —— 那就是精确卡点（判读树见 Release 内 `FLASH-T9.md`）。
+- 若卡住：**拍下最后几行**发回 —— 那就是精确卡点（判读树见 Release 内 `FLASH-T10.md`）；若卡 `bootstrap done` → 长按电源强制重启，退回 t9 并回报（则 8 核 ADT 是触发变量）。
 
 2. **正式启动**（确认上一步成功后）：
 
 ```bash
-fastboot boot raphael-t9-bootstrapfix-clean.img
+fastboot boot raphael-t10-touchbus-clean.img
 ```
 
-- 此版本无文字叠加：黑屏/定格画面数分钟（无进度反馈）→ 锁屏出现（t9 为 1 核，比 8 核慢，耐心等）。
+- 此版本无文字叠加：黑屏/定格画面数分钟（无进度反馈）→ 锁屏出现（应比 t9 流畅：8 核回归）。
+- 重点观察：①流畅度（8 核）；②触摸是否有反应；③拉日志看 `bus idle`/`bus live` 两行（判读树 FLASH-T10.md）。
 - 超过 15 分钟无变化 → 转下方「救砖与取证」。
 
 ## 🚑 救砖与取证
@@ -135,4 +138,4 @@ adb pull /tmp/log.bin
 - [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) — 上游项目与纯 Linux rootfs 管线
 - XNU 内核与 iOS userspace 版权归 Apple Inc. 所有，本项目仅用于研究学习
 
-> r17/t9 判读树与取证命令见 Release `raphael-touch-r17` 内 `FLASH-T9.md`（历史判读树 FLASH-T6/T7/T8 保留在 docs/）。
+> r18/t10 判读树与取证命令见 Release `raphael-touch-r18` 内 `FLASH-T10.md`（历史判读树 FLASH-T6~T9 保留在 docs/）。
