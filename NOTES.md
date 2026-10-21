@@ -225,3 +225,84 @@ sweet)-*.patch is skipped. Also: C++ default arguments live in the
 declaration only, but the out-of-line definition must still list ALL
 parameters (publish() lost its 10th param -> IOPMPowerSource::timeRemaining
 getter shadowed the name).
+
+## Raphael display panel: samsung EA8076 (t14 research)
+
+The panel is NOT "sofef00" - that was a wrong lead. MiCode
+Xiaomi_Kernel_OpenSource raphael-p-oss has the panel in DTS
+(arch/arm64/boot/dts/qcom/dsi-panel-samsung-fhd-ea8076-*-cmd.dtsi,
+5 variants: plain / f1 / f1mp / f1p2 / f1p2-2 + a secondary-supplier
+dsi-panel-ss-fhd-ea8076-cmd.dtsi; all share the brightness scheme):
+
+- DSI **command mode**, 1080x2340, 4 lanes, burst traffic,
+  dma-trigger=trigger_sw / mdp-trigger=none, dsi_lp_mode commands
+- Brightness: DCS 0x51 with a **big-endian** 11-bit level (the "_ss"
+  variant, mipi_dsi_dcs_set_display_brightness_ss in the vendor's
+  drm_mipi_dsi.c), max 2047 (qcom,mdss-brightness-max-level).
+  0x53 is only sent for HBM/dimming events (hbm-on=E8, dimmingon=28,
+  dimmingoff=20), NOT per brightness level. 0x55 = ACL levels.
+- Display off: DCS 0x28 then 0x10 (sleep, 120ms); on sequence ends with
+  0x29. The on-command includes panel-specific unlock (F0/FC 5A 5A) and
+  Gamma/CRC blobs - brightness does NOT need the unlock.
+- Off-command state at boot: ABL programs the whole pipeline and leaves
+  it streaming the splash; our kernel only injects commands.
+
+## DSI 6G v2.2 command TX (SM8150, dsi ctrl0 @ 0x0ae94000)
+
+From vendor dsi-staging (dsi_ctrl.c / dsi_ctrl_hw_cmn.c /
+dsi_ctrl_reg.h), the embedded-mode FIFO path used by 0098:
+
+- Packet dword 0 = [WC_lo WC_hi data_id flags]: data_id = dtype | vc<<6;
+  flags bit7 = LASTCOMMAND, bit6 = payload present, bit5 = embedded BTA
+  (read). Payload follows, 0xff-padded to a dword. NOTE: this kernel's
+  mipi_dsi_create_packet puts WC first (bytes 0/1) - NOT the mainline
+  order (data_id first).
+- DSI_COMMAND_MODE_DMA_CTRL (0x3c): bit28 embedded, bit26 LP, bits
+  31/30/29/24 clear. FIFO path also programs DSI_TEST_PATTERN_GEN_CTRL
+  (0x15c) = BIT(1)|BIT(2)|0x3<<16 and pushes dwords through
+  DSI_TEST_PATTERN_GEN_CMD_DMA_INIT_VAL (0x17c);
+  DSI_TPG_DMA_FIFO_RESET (0x1ec) pulse 1us between transfers.
+- DSI_DMA_CMD_LENGTH (0x4c) = padded byte count; trigger =
+  DSI_CMD_MODE_DMA_SW_TRIGGER (0x90) = 1; completion =
+  DSI_INT_CTRL (0x110) bit 0, write-1-to-clear (pollable).
+- Memory path (kickoff_command): same trigger, DMA address in
+  DSI_DMA_CMD_OFFSET (0x48, 32-bit - buffer must live under 4GB),
+  DSI_DMA_FIFO_CTRL (0x50) bits 16+20 disable watermarks.
+
+## SMB5 charging input path (PM8150B, SPMI SID 2)
+
+Peripheral bases (pm8150b.dtsi): chgr 0x1000, dcdc 0x1100, batif
+0x1200, usb 0x1300, dc 0x1400, typec 0x1500, misc 0x1600. Registers
+0097 reads on input transitions: USBIN_RT_STS 0x1310 (BIT4 = plugin),
+APSD_RESULT 0x1308 (single bit: SDP 01/DCP 08/CDP 04/FLOAT 10/QC2 20/
+QC3 40), ICL_STATUS 0x1107 (input current limit, ~50mA units),
+POWER_PATH_STATUS 0x110b (BIT4 use-USBIN, BIT0 valid input),
+CHGR_STATUS_5 0x100b (charge stage enables - all zero means charging
+disabled at the command level), CHGR_STATUS_1 0x1006 state machine
+(0 INHIBIT .. 5 TERMINATE, 7 DISABLE).
+t13 blind spot: poll() only logged on percent change, so plug/unplug
+events never reached the log. t14: 5s quick poll + transition line.
+
+## ios-topaz / upstream study (t14)
+
+- topaz (MakrSas/ios-topaz) = sibling fork of dipa-studio/ios-sweet for
+  Redmi Note 12 4G (SM6225). xnu/patches = the SAME 0001-0079 lineage,
+  no device patches yet; its own work is the shim (boot image v4,
+  "Gold hand-off", GIC setup) + tools (mkiosroot, root-tweaks). Nothing
+  directly portable to raphael this round (our boot v2 works; our
+  packaging tools match upstream). Worth re-checking when their device
+  patches (0080+) land.
+- Upstream ios-sweet after 0079: only 0080 (IPv4 route change logging)
+  and 0081 (ue0 reports active link) - both already in our tree as
+  0080-sweet-net-trace / 0081-sweet-usb-link-state. Plus
+  tools/sweet-usbnet.sh (we have it), QEMU tooling and a docs site.
+
+## Process lesson (t14 round)
+
+Edit-tool whitespace normalization converted WHOLE FILES tab->space
+(the t13 lesson was region-local). Any patch generated from such a tree
+carries space context against the canonical tab tree. Fix: generate ALL
+board-patch content via scripts (scripts/apply_t14_battery.py,
+scripts/apply_t14_display.py) that do byte-exact anchored replacements
+with explicit \t on the git-committed canonical base, then roundtrip
+(git checkout HEAD -- file; git apply patch; diff saved==applied).

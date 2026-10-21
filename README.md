@@ -1,71 +1,102 @@
-# ios-sweet @ Redmi K20 Pro (raphael)
+# ios-raphael — iOS 16 on Redmi K20 Pro (raphael)
 
-[dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)（XNU 内核 + iOS 16.7.16 userspace，上游已在 sweet / Redmi Note 10 Pro 点亮 iOS 主屏）向 **raphael / Redmi K20 Pro（SM8150）** 的移植实验分支。
+[English version below](#english)
 
-> ⚠️ 【警告】本项目尚未经过全流程实测，仅供极客测试。操作会彻底清空手机数据，严禁在主力机上操作！
+把 Apple 的 XNU 内核 + iOS 16.7.16 用户态跑在红米 K20 Pro（代号 **raphael**，高通 SM8150 / 骁龙 855）上的移植实验。基于上游 [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)（已在 sweet / Redmi Note 10 Pro 点亮 iOS 主屏），本项目为 raphael 做全套硬件适配：触摸、电池、显示、USB、八核。
 
-**当前状态（2026-10-21, r21/t13）**
+> ⚠️ **警告 / Warning**
+> 本项目为实验性质，操作会**彻底清空手机全部数据**，严禁在主力机上操作！
+> This project is experimental. Flashing **erases all phone data**. Never use your daily driver.
 
-- ✅ XNU 早期引导链路实机验证：shim → 内核加载 → VM/zone → 实机完整启动进锁屏
-- ✅ **8 核实机确认（t10/t11 日志）**：`8/8 CPUs initialized`；bootstrap 卡死（根因 kryo470 失配，0090 已修）与卡顿（单核副作用）双双关闭
-- ✅ **触摸实机可用（t12 实测，用户确认）**：GT9886 厂商级 bring-up 全链闭环 —— 真寄存器图（pid@0x4535、配置窗口@0x6f78、帧@0x4100）+ 784 字节面板配置下发（双供应商配置嵌入，按 sensor-id 选择）+ doze 控制 + TX 流式写入（0x49 探针投毒已删）
-- ✅ 显示：raphael 原生 1080x2340 面板点亮（AppleCLCD，shim 直写 ABL splash 帧缓冲）
-- ✅ USB：内核枚举 `1209:0001 Sweet iOS`；看门狗已解除（日志定格不重启）
-- ✅ rootfs 管线：iOS 16.7.16 → 16G HFS+ 镜像（CI 全自动，见 Releases）
-- 🔧 **电池真根因已定位（爬透 qpnp-fg-gen4.c + fg-util.c + smb5-reg.h，0096 修复）**：PM8150B 上根本没有 "QG"，它是 **fg-gen4 双外设集合**（fg-batt-soc@0x4000 + fg-batt-info@0x4100）——t12 读到的 `st2=0xce` 其实就是 monotonic SOC 206/255 ≈ 80% 电量，数值一直都在；0096 全面改用 vendor 同款寄存器图与换算：SOC（0-255 影子校验 + 原厂百分比公式）、电压（raw×122.07µV）、电流（符号扩展×488.281µA）、电池在位（SYS_BATT）、SMB5 充电状态机（USBIN_PLUGIN + CHGR_STATUS1），另带时间剩余估算、真低电警告/临界（仅实测有效时）、SPMI 白名单补 0x41
-- 🛡️ CI 防呆加固：板级补丁被 dxb 静默跳过时直接报错（本轮 0096 曾因本地缩进漂移产出过"绿灯假内核"，已根除这一类事故）
-- 🚧 **t13（r21）已发布待实测**：锁屏电量不再恒 100%、插线出现充电闪电即全胜；判读树见 docs/FLASH-T13.md
+## 📊 当前状态（2026-10-21, r22/t14）
 
-## 下载（Releases）
+| 子系统 | 状态 | 说明 |
+|---|---|---|
+| 引导链 | ✅ 实测可用 | shim → XNU → iOS 锁屏完整启动（`fastboot boot` 免落盘，重启即回安卓引导） |
+| CPU | ✅ 8 核实测 | `8/8 CPUs initialized`（kryo485 匹配表 + PSCI 二次核拉起） |
+| 显示 | ✅ 点亮 + **缩放修复（t14 新）** | 原生 1080×2340 面板；t14 起 iOS 的 1125×2436 画面**整幅缩放**到面板（此前居中裁剪会切掉顶部两角的时间/电量）；`sweetscale=0` 可回退旧行为 |
+| 触摸 | ✅ 实测可用 | GT9886 厂商级 bring-up：真寄存器图 + 784 字节面板配置下发（双供应商）+ doze 控制 |
+| 电池 | ✅ 真实读数 | fg-gen4 硬件电量计：真 SOC/电压/电流（影子校验）+ 低电警告 + 时间剩余；**t14 新增充电状态 5 秒快轮询 + 插拔即日志**（APSD 充电器类型 / 输入限流 / 电源路径全落盘） |
+| 亮度 / 息屏 | 🔧 **t14 新增** | DSI DCS 亮度通道（`sweetfb_bright=` 初始亮度，iOS 滑条联动下一轮接入）+ **息屏立即全黑**（面板清屏 + DCS 0x28，替代旧的多步渐暗，`sweetfb_fade=1` 可回退） |
+| USB | 🔧 **t14 新增** | `sweetusb=2` 启用 CDC-ECM USB 网卡：电脑插线即得 `ue0`（192.168.7.2），配合 `tools/sweet-usbnet.sh` 实时看内核日志（UDP 5140），不再需要进 Recovery 拉日志 |
+| GPU | ❌ 无驱动 | 界面为 CPU 软渲染，滑动卡顿属正常 |
+| Wi-Fi / 蓝牙 / 相机 / 音频 / 传感器 / 基带 | ❌ 未开始 | — |
+
+<details>
+<summary>📁 历史里程碑（t2–t13 归档）</summary>
+
+- t2：首次进锁屏（1 核 + kryo485 二进制补丁） · t7：触摸修复系列起点 · t9：bootstrap 卡死根因（kryo470 失配）
+- t10：八核回归 + 总线电平判读 · t11：TLMM SOUTH tile 根因定位（触摸供电）
+- t12：触摸闭环（GT9886 配置下发，**实测可用**） · t13：fg-gen4 硬件电量计（SOC/电压/电流实测全真）
+</details>
+
+## 📥 下载（Releases）
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-t13-fggen4-clean.img` | **当前首刷推荐（r21）**：**0096 fg-gen4 硬件电量计重写**（真 SOC/电压/电流 + SMB5 充电语义 + 时间剩余 + 低电警告）+ 0094 触摸（实测可用）+ 0090 八核；判读树 docs/FLASH-T13.md |
-| `raphael-t13-fggen4-debug.img` | r21 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
-| `raphael-t7-touchfix-clean.img` | 回退/对照：t7（SWEET 编译，8 核可启动，触摸死） |
-| `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷） |
+| `raphael-t14-display-clean.img` | **当前首刷推荐（r22）**：显示缩放修复 + 即时息屏 + 亮度通道 + 充电状态快轮询 + USB 网卡/实时日志（`sweetusb=2`） |
+| `raphael-t14-display-debug.img` | r22 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
+| `raphael-t7-touchfix-clean.img` | 回退/对照（SWEET 编译，已知可启动，触摸死） |
+| `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷，**rootfs 无需重刷**，与 t 系列内核通用） |
 
-> 旧发行版（r11–r14、t1–t11、sc 系列）已按需求清理；哈希历史保留在 git 各 Release 提交内。t 系列镜像均为组件级校验重打包（shim/DTB/ADT/cmdline 逐字节比对）：
+> 项目内核迭代极快，**每次刷机请务必下载最新版本**。
+> 历史镜像哈希（回退参考）：
 
 ```
-t7-clean: 91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe （回退用，已知可启动）
-t10-clean: e8cd3bc126670fdb2cb3bcd5cf4ee1a3f3b572a1ab53d49234dde0c378a2f857 （诊断版，已完成使命）
-t11-clean: bd75bc2d0a0db479f4295bfe80ecab85276a80b3258ac27ff746723fe902cf12 （总线已通，已被取代）
-t12-clean: 3725736f0773ede73b59a35d1cabddc92decbc58aaa37f8a375fa09d46459c6b （触摸闭环，已被 t13 取代）
+t7-clean:  91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe （回退用，已知可启动）
+t12-clean: 3725736f0773ede73b59a35d1cabddc92decbc58aaa37f8a375fa09d46459c6b （触摸闭环）
 t13-clean: 3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f
-t13-debug: 8a5fe04f6dad86836cb589a2ba0e3c4d75b90aad2550ee69c8cca1ce63a63085
+t14-clean: 3374ac69efb17155de6a61792e5753053c25669317bb5464aa5fa284e8da3a3c
+t14-debug: 51cb98e38f5c14c74e6fad877d938b489f4bebc49ca4570d0f740237c95c4eab
 ```
 
-## 📱 K20 Pro 刷入 iOS 极简指南
+---
 
-### 一、准备
+# 使用方法
 
-- 设备：已解锁 BL 的 K20 Pro，电量 > 80%。
-- 环境：电脑或另一台手机（Termux + `android-tools`，OTG 线连接目标机）已装 adb / fastboot。
-- 文件：
-  - `ios16-root.simg.part-00 ~ 05` 及 `CHECKSUMS.txt`
-  - `raphael-t13-fggen4-debug.img`（排障版，首刷；屏幕控制台常开）
-  - `raphael-t13-fggen4-clean.img`（正式版）
-  - `raphael-t7-touchfix-clean.img`（回退用，已知可启动）
-  - K20 Pro 的 `recovery.img`（OrangeFox，用于备份与取证）
+## 〇、 新手如何从 GitHub 下载文件？
 
-### 二、合并与校验镜像
+项目内核迭代极快，每次刷机请务必下载最新版本。
+
+1. 打开项目发布页：https://github.com/Gsjsjzhznsz/ios-raphael/releases
+2. 找到最上方带有 **Latest** 标签的最新版本。
+3. 点击底部的 **Assets** 展开文件列表。
+4. 你需要下载：
+   - 所有的 `ios16-root.simg.part-xx` 分卷文件（**必须全部下载**）。
+   - `CHECKSUMS.txt`（校验文件）。
+   - 最新的 **clean** 镜像（用于启动，注意**不要下错成 debug 版**）。
+
+> 注：国内访问 GitHub 慢的话，请使用 Watt Toolkit 等加速工具或科学上网。
+
+---
+
+## 一、 合并与校验镜像
+
+将下载的所有 `ios16-root.simg.part-*` 分卷放在电脑同一目录，执行合并：
 
 ```bash
-# 1. 合并分卷
-#    Windows: copy /b ios16-root.simg.part-* ios16-root.simg
-#    Mac/Linux: cat ios16-root.simg.part-* > ios16-root.simg
-
-# 2. 校验（确保哈希与 CHECKSUMS.txt 一致）
-#    Windows: certutil -hashfile ios16-root.simg SHA256
-#    Mac/Linux: sha256sum ios16-root.simg
+# Mac/Linux:
+cat ios16-root.simg.part-* > ios16-root.simg
+# Windows:
+copy /b ios16-root.simg.part-* ios16-root.simg
 ```
 
-### 三、备份关键分区（保命必做）
+校验生成的 `ios16-root.simg` 的 SHA256，**必须与 `CHECKSUMS.txt` 完全一致，否则绝不能刷入**。
 
-1. 手机关机，**电源 + 音量下** 进 Fastboot。
-2. `fastboot boot recovery.img` 进临时 Recovery。
-3. 新建 `backup` 文件夹并备份：
+```bash
+# Mac/Linux:
+sha256sum ios16-root.simg
+# Windows:
+certutil -hashfile ios16-root.simg SHA256
+```
+
+---
+
+## 二、 备份关键分区（保命必做）
+
+1. 手机进 Fastboot：关机，按住 **电源 + 音量下**。
+2. 电脑执行 `fastboot boot 你的recovery.img` 进临时 Recovery。
+3. 在电脑本地新建 `backup` 文件夹，执行以下命令备份 8 个底包分区：
 
 ```bash
 for p in persist modemst1 modemst2 fsg fsc boot dtbo vbmeta; do
@@ -73,65 +104,117 @@ for p in persist modemst1 modemst2 fsg fsc boot dtbo vbmeta; do
 done
 ```
 
-> Windows 用户请在 **CMD**（勿用 PowerShell，`>` 会按文本编码重写、损坏二进制流）或 WSL 下执行。
+> - 请将 `backup` 文件夹妥善保存到电脑以外的地方，**一旦丢失可能无法救砖**。
+> - Windows 用户请在 **CMD**（勿用 PowerShell，`>` 会按文本编码重写、损坏二进制流）或 WSL 下执行。
 
-### 四、刷入 Rootfs
+---
+
+## 三、 刷入 iOS 系统
+
+1. 执行 `adb reboot bootloader` 回到 Fastboot 模式。
+2. 执行刷写（约 10-20 分钟，中途断电或断线会报错，重新连好重刷即可，不会变砖）：
 
 ```bash
-adb reboot bootloader
-# 耗时约 10-20 分钟
 fastboot -S 512M flash userdata ios16-root.simg
 ```
 
-> 刷完后若卡死黑屏（小米 fastboot 假死）：长按 **电源 + 音量下** 强行重进 Fastboot，已写入数据不会丢。
+> 刷完后小米 Fastboot 常假死黑屏，长按 **电源 + 音量下** 强行重进 Fastboot 即可，数据不丢。
 
-### 五、启动与验证
+---
 
-1. **首刷排障版**（屏幕控制台常开）：
+## 四、 引导启动
+
+在 Fastboot 模式下，执行引导（请替换为你刚在 Releases 下载的最新 clean 镜像的实际文件名）：
 
 ```bash
-fastboot boot raphael-t13-fggen4-debug.img
+fastboot boot 最新版的-clean镜像.img
 ```
 
-- 屏幕滚动内核日志 → 出现 `SWEET UFS:` 行 → 屏幕被文字"画花" = iOS 用户态接管（正常现象，正式版才有干净画面）。
-- 若卡住：**拍下最后几行**发回 —— 那就是精确卡点（判读树见 Release 内 `FLASH-T13.md`）。
+- 注意：引导后需等待 **4-8 分钟**，屏幕会出现 iOS 锁屏界面。只要机身微热，绝对不要提前强制重启。
+- 由于无 GPU 驱动，界面基于 CPU 软渲染，滑动会卡顿（正常现象）。触摸已适配（如个别批次失灵请回报日志）。
+- t14 新增：息屏应**立即全黑**（不再慢慢变暗）；顶部时间/电量应完整显示（不再被切掉）；插数据线到电脑后，主机可识别出 USB 网卡（配合 `tools/sweet-usbnet.sh` 实时看日志）。
+- **USB 实时日志（新）**：电脑端 `sudo tools/sweet-usbnet.sh`（Linux/Mac），脚本会配置 192.168.7.1 并用 `nc -ukl 5140` 接收实时内核日志——以后排查问题不用再进 Recovery。
 
-2. **正式启动**（确认上一步成功后）：
+---
 
-```bash
-fastboot boot raphael-t13-fggen4-clean.img
-```
+## 🚑 附：触摸失灵/卡死如何提日志？
 
-- 此版本无文字叠加：黑屏/定格画面数分钟（无进度反馈）→ 锁屏出现（8 核，应与 t10 同样流畅）。
-- 重点观察：①**锁屏电池**（不再恒定 100%、百分比随实际变化即活；插线应出现充电闪电）；②触摸回归确认（t12 已实测可用，不应变化）；③拉日志看 `SWEET BATTERY: probe type=0/0xd … msoc=0/0xXX,0xXX(NN%)` 判读行（两值相等 = 影子校验过，NN% 即真电量）。
-- 超过 15 分钟无变化 → 转下方「救砖与取证」。
-
-## 🚑 救砖与取证
-
-- **提取内核日志**（持久日志环 = userdata 末 4MiB，在 HFS+ 卷之外，不怕踩数据）：
+若无法滑动解锁或卡死，请引导进 Recovery 提取日志发给开发者：
 
 ```bash
-fastboot boot recovery.img
-adb shell -T "tail -c 4194304 /dev/block/by-name/userdata > /tmp/log.bin"
-adb pull /tmp/log.bin
+fastboot boot 你的recovery.img
+# 等待进 Recovery 后执行：
+adb shell -T "tail -c 4194304 /dev/block/by-name/userdata > /tmp/sweet-log.bin"
+adb pull /tmp/sweet-log.bin
 ```
 
 > 存放路径必须是 `/tmp`（内存盘）——`/sdcard` 现在是 HFS+，Recovery 挂不上。
 
-- **USB 判别法（5 秒）**：主机 `fastboot devices` 仍列出设备 = 小米 ABL fastboot 残留；枚举出 `1209:0001 Sweet iOS` 才是内核 USB 活着。
+## 🔙 附：如何退回安卓？
 
-- **回退安卓**：小米官方 MiFlash 刷入官方线刷包（需 PC；无 PC 可用 Termux fastboot + OTG 逐分区刷线刷包）。重刷 userdata 会同时抹掉 iOS rootfs。
+本项目仅覆盖了 `userdata`，未改动底层分区。如需回退，直接使用小米官方 **MiFlash** 工具配合 K20 Pro 官方线刷包（TGZ 格式）进行线刷恢复即可。
 
-## 构建与工具
+---
 
-- `.github/workflows/build-rootfs.yml` — 一键产出 iOS rootfs 并发 Release（macOS runner）
-- `tools/build-raphael.sh` — 全链路打包：DTB 提取 → ADT → mkpayload → shim → boot.img v2
-- `tools/repack-boot-v2.py` — 对实测 boot 镜像原位补丁 cmdline（sanity 模式逐字节复验），布局逆向文档见 `tools/README-repack.md`
-- 补丁链 0001-0096：早期控制台 / 持久日志环 / USB bring-up / raphael 显示适配 / 0090 匹配表（kryo485）/ 0091 触摸总线诊断 / 0092 电池 / 0093 触摸 TLMM-south / 0094 GT9886 配置下发（触摸真根因）/ 0095 电池 SPMI sid / 0096 fg-gen4 硬件电量计重写（电池真根因）等
+# English
 
-## 致谢
+**ios-raphael** brings Apple's XNU kernel + iOS 16.7.16 userspace to the Redmi K20 Pro (codename **raphael**, Qualcomm SM8150 / Snapdragon 855). It is a port of [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet), adding full hardware bring-up for raphael: touch, battery, display, USB and all 8 CPU cores.
 
-- [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) — 上游项目与纯 Linux rootfs 管线
-- XNU 内核与 iOS userspace 版权归 Apple Inc. 所有，本项目仅用于研究学习
+> ⚠️ Experimental. Flashing **erases all data** — never on a daily driver. The project only overwrites `userdata`; you can return to Android anytime with MiFlash + the official K20 Pro fastboot package.
 
-> r21/t13 判读树与取证命令见 Release `raphael-touch-r21` 内 `FLASH-T13.md`（历史判读树 FLASH-T6~T12 保留在 docs/）。
+## Status (2026-10-21, r22/t14)
+
+- ✅ Boot chain proven on device: shim → XNU → iOS lock screen (`fastboot boot`, nothing permanent)
+- ✅ All 8 cores (`8/8 CPUs initialized`)
+- ✅ Display: native 1080×2340 panel; **new in t14** the 1125×2436 iPhone-X frame is now **scaled** to the panel instead of center-cropped (time/battery corners no longer cut off; `sweetscale=0` reverts)
+- ✅ Touch (GT9886 vendor-grade bring-up, confirmed working)
+- ✅ Battery: real fg-gen4 hardware gauge (SOC/voltage/current, shadow-verified); **new in t14** 5-second charger-input polling with APSD/ICL/power-path transition logging
+- 🔧 New in t14: brightness DCS channel (`sweetfb_bright=`; iOS slider hookup next round) and **instant screen-off** (panel clear + DCS 0x28; `sweetfb_fade=1` restores the old fade)
+- 🔧 New in t14: USB — `sweetusb=2` brings up a CDC-ECM USB Ethernet gadget (`ue0`, 192.168.7.2). Run `tools/sweet-usbnet.sh` on the PC and watch the **live kernel log** (UDP 5140) — no more recovery dances to pull logs
+- ❌ No GPU driver (CPU software rendering, UI is slow), no Wi-Fi/BT/camera/audio/modem yet
+
+## Downloads (Releases)
+
+| File | Purpose |
+|---|---|
+| `raphael-t14-display-clean.img` | **Recommended (r22)**: display scaling fix + instant off + brightness channel + fast charger polling + USB network/log |
+| `raphael-t14-display-debug.img` | Same, with the on-screen console always on (photograph the last lines if it hangs) |
+| `raphael-t7-touchfix-clean.img` | Known-good fallback |
+| `ios16-root.simg.part-00~05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs (16G HFS+ sparse image; no need to re-flash when kernels update) |
+
+## Flashing Guide
+
+0. **Download** from the [releases page](https://github.com/Gsjsjzhznsz/ios-raphael/releases) (pick the **Latest** release): every `ios16-root.simg.part-xx` volume, `CHECKSUMS.txt`, and the newest **clean** image.
+1. **Merge & verify**: `cat ios16-root.simg.part-* > ios16-root.simg` (Windows: `copy /b`), then check the SHA256 against `CHECKSUMS.txt`. Never flash on mismatch.
+2. **Back up 8 critical partitions** (in a temporary recovery via `fastboot boot recovery.img`):
+   ```bash
+   for p in persist modemst1 modemst2 fsg fsc boot dtbo vbmeta; do
+       adb exec-out cat /dev/block/by-name/$p > backup/$p.img
+   done
+   ```
+   Keep these somewhere safe — they can unbrick the phone.
+3. **Flash the rootfs** (~10–20 min): `fastboot -S 512M flash userdata ios16-root.simg`. If Xiaomi fastboot appears frozen afterwards, force-restart into fastboot with **Power + Vol-**; the data is intact.
+4. **Boot**: `fastboot boot raphael-t14-display-clean.img`, wait **4–8 minutes** for the lock screen. The body staying warm is normal; do not force-reboot early. Touch works; expect software-rendering lag.
+
+## Troubleshooting
+
+- **Pull the log** (touch dead / hung): boot a recovery, then
+  `adb shell -T "tail -c 4194304 /dev/block/by-name/userdata > /tmp/sweet-log.bin" && adb pull /tmp/sweet-log.bin`
+- **Live log over USB (new)**: `sudo tools/sweet-usbnet.sh` on the PC shows the kernel log in real time.
+- **Return to Android**: MiFlash + official K20 Pro fastboot package. Only `userdata` was touched.
+
+## Build & Tools
+
+- `.github/workflows/xnu.yml` — kernel CI (board-macro and patch-skip red gates)
+- `.github/workflows/build-rootfs.yml` — one-shot iOS rootfs build + release
+- `tools/build-raphael.sh` / `repack-boot-v2.py` / `mkadt.py` / `mkpayload.py` — full packaging chain
+- `tools/sweet-usbnet.sh` — host side of the USB Ethernet gadget + live log
+- Patch series 0001–0098: early console, persistent log ring, USB bring-up, raphael display/touch/battery (0090 kryo485 match, 0093 TLMM-south, 0094 GT9886 config download, 0096 fg-gen4 gauge, 0097 charger input polling, 0098 display scaling + brightness + instant off)
+
+## Credits
+
+- [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) — upstream project and rootfs pipeline
+- [MakrSas/ios-topaz](https://github.com/MakrSas/ios-topaz) — sibling port (Redmi Note 12 4G) used for cross-checking
+- The XNU kernel and iOS userspace are © Apple Inc. This project is for research only.
+
+> 判读树与取证命令：Release `raphael-touch-r22` 内 `FLASH-T14.md`（历史判读树 FLASH-T6~T13 保留在 docs/）。
