@@ -445,3 +445,49 @@ Stage Summary:
 - t16 死点精确到"端点命令写跨时钟域"级别，根因从"SUSPHY 位"升级为"PHY 从未被启动"；0102 是 Linux 序列的寄存器级移植
 - t17 判决树（FLASH-T17.md）：ep0 TRB armed + running + 主机枚举 ECM + ping 通 = USB 全胜（40s 重启应消失）；卡 hsphy pre-state = PHY 供电轨（下轮 RPMh LDO）；过 hsphy up 仍卡 canary/ep0 = 时钟域（下轮全块 BCR + GCTL）
 - 触摸/电池/显示等 t14 功能随 t17 一并首测（历轮 USB 楔死都发生在它们用户态可见之前，但内核路径已验证）
+- 流程防线：发布脚本上传后必须校验 size 字段；CDN 缓存陈旧用资产 API 端点辨别
+
+---
+Task ID: 21
+Agent: Super Z (main agent)
+Task: t16 实测解读（ue0 up 后首条端点命令写楔死 + 40s 硬件侧重启）→ K20 Pro 逆向项目研究（用户点名）→ 0102 femto PHY 完整启动 → t17/r25 发布
+
+Work Log:
+- t16 照片环绕控制台解码（指针恰在环绕点，72 行完美时序窗口重建）：probe 头（GDSC/时钟/GSNPSID/DCFG/GEVNT，DALEPENA=0xf=ABL 残留）→ ue0 attach/addr/up(err 0) → SUSPHY 0x00102400→0x00102400（冷启动本来就清）→ QSCRATCH HS/SS_PHY_CTRL=0x00000000（★全零=ABL 交接时 USB 块被重置）→ VBUS override 0x10100000/0x61000000 → 软复位 1ms → settle → 事件缓冲 → canary 0x00000000（★读通过）→ ep0 打印 → 楔死（无 timeout=总线级）；顶部 "^NRL_CFG 0x4" = QSCRATCH 行 GENERAL_CFG 的环绕尾巴
+- 根因定级：端点命令状态机用 PHY 的 UTMI 时钟——canary 纯读走 AHB 无需该时钟，命令写要跨时钟域启动状态机 → PHY 断电（冷启动）/挂起（t15 热）都死 → ABL 残局永远不够，必须像 Linux 每次开机从头启动 PHY；40s 重启 = RPM/TZ/NoC 硬件侧升级（t13/t14 稳定运行从不重启=无全局看门狗，vendor 充电 wd-bark 16s 是另一子系统）
+- 逆向研究（用户要求"搜寻 K20 Pro 逆向项目"）：**重大更正——sm8150 HS PHY = 7nm Synopsys femto（drivers/phy/qualcomm/phy-qcom-snps-femto-v2.c，compatible qcom,sm8150-usb-hs-phy），Task 19 的 qusb2-v2 参照是错代驱动**（代码搜索实证 compatible 只在 DTS，驱动匹配主 compatible）；旧 probe 尾打印读的 0x1a0/0x210/0x240 偏移在 femto 上不存在。howtocuddle/xiaomi_raphael（真实日用级 mainline Gentoo 6.18 项目）sm8150.dtsi 佐证：ref 时钟直取 RPMH_CXO + GCC_QUSB2PHY_PRIM_BCR 复位；pmOS raphael = 6.5 vendor fork 另一谱系
+- 双 DTS 实锤 raphael USB = HS-only 单 PHY（vendor: maximum-speed="high-speed" + usb_nop_phy，QMP DP 禁用；mainline patchew: phys 只留 usb_1_hsphy）→ 无需 QMP USB3；vendor 板级调优 param-override-seq（OVERRIDE_X1=0x83/X2=0x2c，(value,offset) 序列，0x70/0x74 正是 femto OVERRIDE_X1/X2）
+- femto 驱动全文研读（拉取到 work/ref/dwc3/phy-qcom-snps-femto-v2.c）：15 步序列（CFG0 CMN_OVERRIDE_EN → POR=1 → FSEL=000 → PLLBTUNE → REFCLK_SEL=10b → VBUSVLDEXTSEL0/VBUSVLDEXT0 → 板级覆盖 → VREGBYPASS → SUSPEND_N_SEL|SUSPEND_N → SLEEPM → SIDDQ=0 上电 → POR=0 释放 → SEL=0 → 覆盖关）+ GCC_QUSB2PHY_PRIM_BCR=0x12000 脉冲（gcc-sm8150.c 复核，时钟偏移全对）；Linux 顺序 phy_setup→phy_init→软复位（Linux 之后回设 SUSPHY=1 供 phy ops，我们保持 0=永 P0，轮询式不需要）
+- 0102 补丁（scripts/apply_0102_hsphy.py 字节级锚定，无缩进漂移）：femto 全序列插在 SUSPHY 清除与 QSCRATCH 之间 + pre-state/up 两行诊断 + usb_phy_wr_mask 助手（写后读回）+ probe 尾打印改 femto 偏移；往返校验干净通过
+- CI run 39630226729（2ec9adc）success，内核 243a5496…；二进制标记验证全过（hsphy pre-state/up/femto dump 在、QUSB2 PLL_STATUS/PORT_TUNE1 消）
+- t17 打包六重校验全过（ANDROID!v2/shim/DTB==t7/ADT 8 核 12588B/cmdline 330B==t16/markers 0090-0102/cfg s0s1/entry 0xfffffe000748f488 谱系一致）；clean 80b148a3… / debug 2db77b0a…
+- 发布 r25（419772788，4 资产 size+state 双校验全过）+ 删 r24 → 发行版 = rootfs + t7(r15) + r25(t17)；README 双语状态/下载表/哈希/刷机指南全面刷新；NOTES.md 存档六节（femto 更正/序列/HS-only/屏幕解码/RE 项目调查/LDO 兜底清单）；download/ 刷新 t17 五件套
+- 沿用流程防线：发布脚本 @+size 双校验（r24 事故防复发）；补丁对规范基生成；fetch 脚本 SHA 匹配陷阱（HEAD 前移导致轮询空转）已用 run ID 直下绕过
+
+Stage Summary:
+- t16 死点精确到"端点命令写跨时钟域"级别，根因从"SUSPHY 位"升级为"PHY 从未被启动"；0102 是 Linux 序列的寄存器级移植
+- t17 判决树（FLASH-T17.md）：ep0 TRB armed + running + 主机枚举 ECM + ping 通 = USB 全胜（40s 重启应消失）；卡 hsphy pre-state = PHY 供电轨（下轮 RPMh LDO）；过 hsphy up 仍卡 canary/ep0 = 时钟域（下轮全块 BCR + GCTL）
+- 触摸/电池/显示等 t14 功能随 t17 一并首测（历轮 USB 楔死都发生在它们用户态可见之前，但内核路径已验证）
+
+---
+Task ID: 22
+Agent: Super Z (main agent)
+Task: t17 实测解读（用户报告 ~45s 重启 + 询问是否临时关闭 USB）→ 三段裁剪 VLM 逐字转录 → 根因闭环到 PHY 模拟供电轨 → 0103 RPMh LDO 投票 → t18/r26 发布
+
+Work Log:
+- 用户反馈：问题依旧，~45s 重启，问"要不要先临时关闭 USB"。回答：**不关**——t17 照片证明 USB 栈 90% 活着（GDSC/8 时钟/GSNPSID/DCFG/GEVNT/QSCRATCH/VBUS/软复位/事件缓冲/canary 读全部通过），关 USB 会丢掉 ping 判据；t13/t14 已证不探测 USB 时系统无限稳定
+- 取证升级：照片裁 3 段（0-40%/30-72%/62-100%）2x 放大灰度增强，逐段 VLM 逐字转录（vlm-t17-shot1/band1/band2/band3.json），72 行完整时序重建
+- **几何发现**：屏幕同时含两次启动——行 1-13 是 boot A 尾巴（up→QSCRATCH→VBUS→复位→settle→事件→canary→ep0），行 14-72 是 boot B（SK/Skywalk/kainit/lo0/UFS/LOG/KEYS/TOUCH→GDSC→…→pre-state 戛然而止"…CTR"处+绿色光标）；45 秒复位是热复位、帧缓冲不清、early console 从最后非空行续写；"一行两次 pre-state"非双调用（全树只有 sweet_ufs_rootdev 一个调用点，且 su.ready 在 usb_probe 前置位）——是跨启动残留
+- **Boot A 定性**：femto 序列跑完但 `hsphy up (femto)` 回读全是重复字节垃圾（COMMON1 0x3b3b3b3b / REFCLK 0x02020202 / CTRL2 0x00000606）= PHY 寄存器堆未供电、15 步写全部没粘住；ep0 命令写仍楔死 CPU（无 UTMI 时钟，同 t16 死点）；其余 CPU 继续启动；**~45s 复位时刻与 `SWEET TOUCH: starting in 45 s` 倒计时到期精确吻合**（t16 的"~40s"也是它）——触摸线程在残废系统上的 SE19/TLMM/I2C 总线活动触发 RPM/TZ 侧升级，重启是症状不是独立故障
+- **Boot B 定性**：死得更早——pre-state printf 输出中途截断（"…CTR"）：C 语义下 4 个读实参先于调用求值完毕（文字已上屏即证明），CPU 是在控制台输出途中被异步总线错误打断
+- **根因闭环**：Linux `qcom_snps_hsphy_init()` 第一行 = `regulator_bulk_enable(vdda-pll/vdda33/vdda18)`（先于时钟、BCR、寄存器序列）——0102 移植恰好漏了这步，其余寄存器序列全部正确
+- 轨映射（mainline raphael patchew v2 DTS + 本地 work/ref 复核）：vdda33=vreg_l2a_3p1=**ldoa2@3072mV**、vdda-pll=vreg_l5a_0p875=**ldoa5@880mV**、vdda18=vreg_l12a_1p8=**ldoa12@1800mV**（全 PM8150/a 片，全 HPM）
+- 复用审计：`sweet_rpmh.c`（SWEET 板 TCS 投票器）**本来就在 raphael 编译**（RAPHAEL 构建同时定义 ARM64_BOARD_CONFIG_SWEET）；vendor sm8150.dtsi 逐字证实 apps_rsc 几何全同（drv-id 2、ACTIVE 2/SLEEP 3/WAKE 3、RSC 0x18220000、TCS 0x18220d00、cmd-db 定位器 0x0c3f000c reg 8 字节）——TCS 纪律零改动
+- 0103 补丁（scripts/apply_0103_rpmh_ldo.py，幂等+byte 锚定）：sweet_rpmh.c 守卫板感知化（raphael 三轨紧电压窗，SWEET 保留 ldoc11）+ 两处 L11C 打印泛化；sweet_usb.c 在 pre-state 与 BCR 之间插三票 + `hsphy post-LDO` 回读打印 + **投票失败干净中止**（读死 PHY 返回垃圾但可存活，ep0 写才楔死——失败模式从 45 秒重启循环变成稳定锁屏+拍照定位）；往返校验干净
+- CI run 39638829687（b66adc3）success，内核 ea2b69ab…；t18 六重校验全过（ANDROID!v2/shim/DTB==t7/ADT 8 核 12588B/cmdline 330B==t17/markers 0090-0103 含 RPMH+post-LDO+ldoa 三轨、ldoc11 正确被预处理掉/entry 0xfffffe000748f488 谱系一致）；clean a16e1725… / debug 6f165dca…
+- 发布 r26（419823957，4 资产 @+size 双校验 + 公开 URL 回读 sha 全等）+ 删 r25 → 发行版 = rootfs + t7(r15) + r26(t18)；README 双语状态/下载表/哈希/判读树/指南全面刷新；NOTES.md 存档（两启动屏幕几何课/垃圾回读判据/45s 触摸触发闭环/轨映射/0103 事实/投票失败分类法）；download/ 刷新 t18 五件套（清掉 t13/t14/t17 旧件）
+
+Stage Summary:
+- t17 案子破了 90%：死因不是寄存器序列（0102 全对）而是漏了 Linux 的第一步——PHY 三条模拟供电轨从未上电（重复字节垃圾回读是铁证）；45 秒重启 = 触摸倒计时触发，症状而已
+- t18 判决树（FLASH-T18）：三票成功 + post-LDO 值离开垃圾 → up 回读正常 → ep0 TRB armed → running → 主机枚举 ECM + ping 通 = USB 全胜；票失败则干净中止锁屏，RPMH 打印自分类下一轮（命名/继承冲突/超时→SPMI 直写兜底）
+- 方法沉淀：跨启动屏幕残留的识别法（顶行时序不可能属同一启动即断双启动）；printf 中途截断 = 异步异常打断而非实参读挂死
