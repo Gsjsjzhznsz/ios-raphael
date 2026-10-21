@@ -1,0 +1,58 @@
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index 3b245e2..db78e2b 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -125,7 +125,13 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ 		return -1;
+ 	}
+ 	unsigned off = 0x80u * apid;
+-	uint32_t cmd = (1u << 27) | ((addr & 0xffu) << 4);
++	/* Observer command word per Linux pmic_arb_fmt_cmd_v2: opcode<<27 |
++	 * sid<<20 | addr<<4 | (len-1). The sid field was missing through t11:
++	 * harmless on SWEET (PM6150 = SID 0), but raphael reads PM8150B on
++	 * SID 2, so every battery read targeted SID 0 and the QG type check
++	 * failed silently -> static fallback. */
++	uint32_t cmd = (1u << 27) | ((uint32_t)(sid & 0xfu) << 20) |
++	    ((addr & 0xffu) << 4);
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 	*(volatile uint32_t *)(sp_obs + off) = cmd; /* EXT_READL, BC=0 */
+ 	__asm__ volatile("dsb osh" ::: "memory");
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 960b691..e932d3b 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -297,6 +297,34 @@ SweetBattery::start(IOService *provider)
+ 	int real = 0;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+ 	fReal = real == 1 && sweet_spmi_init() == 0;
++	if (fReal) {
++		/* One-shot register probe with per-field errors: any poll failure
++		 * after this is attributable to data, not to a dead read path. */
++		uint8_t type = 0, sub = 0, st1 = 0, st2 = 0, usb = 0, path = 0,
++		    chg = 0, chgerr = 0, temp = 0;
++		uint16_t vraw = 0, iraw = 0;
++		int e_type = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_QG_TYPE,
++		    &type);
++		int e_sub = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_QG_SUBTYPE,
++		    &sub);
++		int e_st1 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_QG_STATUS,
++		    &st1);
++		int e_st2 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_QG_STATUS + 1,
++		    &st2);
++		int e_v = readWord(SWEETBATT_QG_VOLTAGE, &vraw) ? 0 : 1;
++		int e_i = readWord(SWEETBATT_QG_CURRENT, &iraw) ? 0 : 1;
++		int e_usb = sweet_spmi_read(SWEETBATT_SID, 0x1310, &usb);
++		int e_path = sweet_spmi_read(SWEETBATT_SID, 0x110b, &path);
++		int e_chg = sweet_spmi_read(SWEETBATT_SID, 0x1006, &chg);
++		int e_ce = sweet_spmi_read(SWEETBATT_SID, 0x1007, &chgerr);
++		int e_ct = sweet_spmi_read(SWEETBATT_SID, 0x100d, &temp);
++		IOLog("SWEET BATTERY: probe type=%d/%#x sub=%d/%#x st1=%d/%#x "
++		    "st2=%d/%#x v=%d/%#x i=%d/%#x usb=%d/%#x path=%d/%#x "
++		    "chg=%d/%#x err=%d/%#x temp=%d/%#x\n",
++		    e_type, type, e_sub, sub, e_st1, st1, e_st2, st2,
++		    e_v, vraw, e_i, iraw, e_usb, usb, e_path, path,
++		    e_chg, chg, e_ce, chgerr, e_ct, temp);
++	}
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
+ 	if (fReal) {
