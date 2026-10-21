@@ -340,3 +340,23 @@ Stage Summary:
 - t13 判决：`probe type=0/0xd sys=0/0x0 msoc=0/0xXX,0xXX(NN%)`（两值相等=影子过）+ 锁屏不再恒 100% + 插线闪电 → 全胜；百分比冻结但电压动 → 下轮 fg-memif 电池 profile
 - 工程加固：补丁必须对 CI buildtree 规范基生成；CI 对板级补丁跳过即红
 - 彩蛋已备料：升降摄像头马达全协议在案（NOTES.md）
+
+---
+Task ID: 17
+Agent: Super Z (main agent)
+Task: t13 实测解读（充电状态未识别 + 屏幕缩放/边被挡 + 息屏渐慢 + USB 不可连）→ 逆向研究（EA8076 面板 / DSI 6G v2.2 / SMB5 输入路径 / ios-topaz）→ 0097+0098 → t14/r22 发布 + README 双语重写
+
+Work Log:
+- t13 日志判读：电池读数全真（msoc 0xc2=76% 影子校验过、v=4065mV、i=-387mA 放电、probe 全字段 err=0）；`usb=0x26`=UV|VASHDN 无 VBUS（采样时未插线）；充电检测存在**日志盲点**——0096 只在百分比变化时打日志，插拔事件从不落盘；`swap layer 0 surface 1125x2436` 实锤 iOS 全画布渲染 + present() 居中裁剪（fOffX=22/fOffY=48）= 顶部两角被切的根因；`sweetusb=0` 从 t7 继承，CDC-ECM gadget（0073-0077）从未启用
+- 逆向研究（本轮新证据全部入库 NOTES.md）：raphael 面板 = **samsung EA8076**（MiCode raphael-p-oss dsi-panel-samsung-fhd-ea8076-*-cmd.dtsi，DSI command 模式、亮度=DCS 0x51 大端 11-bit max 2047、息屏=0x28/0x10、APSD/AOR/ACL 表全量）；DSI 6G v2.2 命令发送三件套（嵌入式包格式 [WC_lo WC_hi data_id flags+payload]、TPG FIFO 路径寄存器 0x15c/0x17c/0x1ec、INT_CTRL 0x110 BIT0 轮询完成）——注意该内核 packet header 顺序是 WC 在前（非主线顺序）；SMB5 输入路径寄存器图（APSD_RESULT 0x1308 单比特类型、ICL 0x1107、POWER_PATH 0x110b、STATUS5 0x100b）；ios-topaz 研究 = dipa-studio/ios-sweet 的 SM6225 兄弟 fork，xnu 补丁同源 0001-0079 无增量，其 shim boot-v4/rootfs 工具暂无可移植项，上游 ios-sweet 新增仅 0080/0081（我们已有）
+- 0097（电池充电状态）：5 秒快轮询（USBIN_RT_STS+CHGR_STATUS1 两读，变化即全量 poll）+ 输入切换日志（plugin/APSD 类型名/ICL/POWER_PATH/STATUS5/充电状态机名一行全落）+ probe 行补四个寄存器 + APSD/状态名辅助函数
+- 0098（显示）：最近邻缩放表（fColMap/fRowMap，中心对齐）替代裁剪（`sweetscale=0` 回退）；DSI DCS 亮度通道（fbDsiSend：TPG FIFO 嵌入式 LP 命令，0x51 ss 大端，超时即自禁用）；即时息屏（RequestPowerChange(0) 一次清屏 + DCS 0x28，唤醒 0x29+恢复亮度，`sweetfb_fade=1` 回退渐暗）；setProperties("brightness") 钩子；未实现 selector 带参数值落日志（下一轮定位 iOS 滑条入口）
+- **流程事故预防**：Edit 工具再次把整文件 tab→空格（比 t13 事故范围更大）；改用 scripts/apply_t14_battery.py / apply_t14_display.py 字节级锚定替换（显式 \t、每处替换断言唯一命中、往返校验 git checkout→apply→diff 全等），补丁 0097（214 行）/0098（476 行）从规范基干净生成
+- USB：`sweetusb=2` 进 t14 cmdline（raphael 构建下 gadget 全编译，QSCRATCH 0x0a6f8800 与主线 sm8150 usb@a6f8800 一致、GCC 时钟表 0087 已验证、probe 调用点在 UFS root 初始化尾部不阻塞启动）；文档化 tools/sweet-usbnet.sh 用法
+- CI run 39606221999 一次通过（5e53979），内核 9b73a8f1…；t14 打包六重校验全过（ANDROID!v2 / shim/DTB==t7 / ADT 8 核 12588B / cmdline 330B 含 sweetusb=2+sweetbattery=1 / 0090-0098 标记全在含 input plugin 行、(scaled)、brightness、display off (instant)、USB gadget 行 / cfg s0/s1 嵌入）；clean 3374ac69… / debug 51cb98e3…
+- 发布 r22（4 资产：clean/debug/FLASH-T14.md/T14-SHA256SUMS.txt）+ 删 r21 → 发行版 = rootfs + t7(r15) + r22；README 全面重写（双语恢复 + 用户提供的完整刷机指南〇-四 + 救砖/回退附录 + 状态表 + 历史哈希）；NOTES.md 存档 EA8076/DSI/SMB5/topaz 研究 + 本轮流程教训
+
+Stage Summary:
+- 四项用户诉求全部给出修复或通道：缩放（裁剪→整幅缩放）、息屏（7 步渐暗→即时全黑+DCS 0x28）、亮度（首次打通 DSI DCS 通道，iOS 滑条入口下一轮凭带值 selector 日志定位）、充电状态（5s 响应+全输入路径落盘）；USB（sweetusb=2 网卡+实时日志）
+- t14 判决树（FLASH-T14.md）：A 显示（时间/电量完整=缩放胜）、B 息屏/亮度（立即黑=胜；拖滑条后回报带值 selector 日志）、C 充电（插线 ≤5s 闪电=胜；plugin=1 但 DISABLE → 回报完整行，下一步查充电禁用写通道）、D USB（枚举+ping 通=胜）
+- 兜底：`sweetscale=0`/`sweetfb_fade=1`/`sweetusb=1` 全部可回退；t13/t7 可随时引导
