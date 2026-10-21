@@ -94,7 +94,7 @@ jobs:
             exit 1
           fi
 
-      - name: Guard: no silently skipped patches
+      - name: "Guard - no silently skipped patches"
         working-directory: dxb
         run: |
           # darwin-xnu-build's patch loop only WARNS on a failed patch
