@@ -424,3 +424,24 @@ Stage Summary:
 - r24 发行版完全修复：4 资产正确在位，公开 URL 可下载，哈希与 README/T16-SHA256SUMS 一致
 - 用户可直接 fastboot boot raphael-t16-susphy-clean.img（或 debug 版）继续 t16 判读树（SUSPHY cleared → canary → ep0 armed → running → 锁屏 → 主机枚举 ECM + ping 192.168.7.2）
 - 流程防线：发布脚本上传后必须校验 size 字段；CDN 缓存陈旧用资产 API 端点辨别
+---
+Task ID: 21
+Agent: Super Z (main agent)
+Task: t16 实测解读（ue0 up 后首条端点命令写楔死 + 40s 硬件侧重启）→ K20 Pro 逆向项目研究（用户点名）→ 0102 femto PHY 完整启动 → t17/r25 发布
+
+Work Log:
+- t16 照片环绕控制台解码（指针恰在环绕点，72 行完美时序窗口重建）：probe 头（GDSC/时钟/GSNPSID/DCFG/GEVNT，DALEPENA=0xf=ABL 残留）→ ue0 attach/addr/up(err 0) → SUSPHY 0x00102400→0x00102400（冷启动本来就清）→ QSCRATCH HS/SS_PHY_CTRL=0x00000000（★全零=ABL 交接时 USB 块被重置）→ VBUS override 0x10100000/0x61000000 → 软复位 1ms → settle → 事件缓冲 → canary 0x00000000（★读通过）→ ep0 打印 → 楔死（无 timeout=总线级）；顶部 "^NRL_CFG 0x4" = QSCRATCH 行 GENERAL_CFG 的环绕尾巴
+- 根因定级：端点命令状态机用 PHY 的 UTMI 时钟——canary 纯读走 AHB 无需该时钟，命令写要跨时钟域启动状态机 → PHY 断电（冷启动）/挂起（t15 热）都死 → ABL 残局永远不够，必须像 Linux 每次开机从头启动 PHY；40s 重启 = RPM/TZ/NoC 硬件侧升级（t13/t14 稳定运行从不重启=无全局看门狗，vendor 充电 wd-bark 16s 是另一子系统）
+- 逆向研究（用户要求"搜寻 K20 Pro 逆向项目"）：**重大更正——sm8150 HS PHY = 7nm Synopsys femto（drivers/phy/qualcomm/phy-qcom-snps-femto-v2.c，compatible qcom,sm8150-usb-hs-phy），Task 19 的 qusb2-v2 参照是错代驱动**（代码搜索实证 compatible 只在 DTS，驱动匹配主 compatible）；旧 probe 尾打印读的 0x1a0/0x210/0x240 偏移在 femto 上不存在。howtocuddle/xiaomi_raphael（真实日用级 mainline Gentoo 6.18 项目）sm8150.dtsi 佐证：ref 时钟直取 RPMH_CXO + GCC_QUSB2PHY_PRIM_BCR 复位；pmOS raphael = 6.5 vendor fork 另一谱系
+- 双 DTS 实锤 raphael USB = HS-only 单 PHY（vendor: maximum-speed="high-speed" + usb_nop_phy，QMP DP 禁用；mainline patchew: phys 只留 usb_1_hsphy）→ 无需 QMP USB3；vendor 板级调优 param-override-seq（OVERRIDE_X1=0x83/X2=0x2c，(value,offset) 序列，0x70/0x74 正是 femto OVERRIDE_X1/X2）
+- femto 驱动全文研读（拉取到 work/ref/dwc3/phy-qcom-snps-femto-v2.c）：15 步序列（CFG0 CMN_OVERRIDE_EN → POR=1 → FSEL=000 → PLLBTUNE → REFCLK_SEL=10b → VBUSVLDEXTSEL0/VBUSVLDEXT0 → 板级覆盖 → VREGBYPASS → SUSPEND_N_SEL|SUSPEND_N → SLEEPM → SIDDQ=0 上电 → POR=0 释放 → SEL=0 → 覆盖关）+ GCC_QUSB2PHY_PRIM_BCR=0x12000 脉冲（gcc-sm8150.c 复核，时钟偏移全对）；Linux 顺序 phy_setup→phy_init→软复位（Linux 之后回设 SUSPHY=1 供 phy ops，我们保持 0=永 P0，轮询式不需要）
+- 0102 补丁（scripts/apply_0102_hsphy.py 字节级锚定，无缩进漂移）：femto 全序列插在 SUSPHY 清除与 QSCRATCH 之间 + pre-state/up 两行诊断 + usb_phy_wr_mask 助手（写后读回）+ probe 尾打印改 femto 偏移；往返校验干净通过
+- CI run 39630226729（2ec9adc）success，内核 243a5496…；二进制标记验证全过（hsphy pre-state/up/femto dump 在、QUSB2 PLL_STATUS/PORT_TUNE1 消）
+- t17 打包六重校验全过（ANDROID!v2/shim/DTB==t7/ADT 8 核 12588B/cmdline 330B==t16/markers 0090-0102/cfg s0s1/entry 0xfffffe000748f488 谱系一致）；clean 80b148a3… / debug 2db77b0a…
+- 发布 r25（419772788，4 资产 size+state 双校验全过）+ 删 r24 → 发行版 = rootfs + t7(r15) + r25(t17)；README 双语状态/下载表/哈希/刷机指南全面刷新；NOTES.md 存档六节（femto 更正/序列/HS-only/屏幕解码/RE 项目调查/LDO 兜底清单）；download/ 刷新 t17 五件套
+- 沿用流程防线：发布脚本 @+size 双校验（r24 事故防复发）；补丁对规范基生成；fetch 脚本 SHA 匹配陷阱（HEAD 前移导致轮询空转）已用 run ID 直下绕过
+
+Stage Summary:
+- t16 死点精确到"端点命令写跨时钟域"级别，根因从"SUSPHY 位"升级为"PHY 从未被启动"；0102 是 Linux 序列的寄存器级移植
+- t17 判决树（FLASH-T17.md）：ep0 TRB armed + running + 主机枚举 ECM + ping 通 = USB 全胜（40s 重启应消失）；卡 hsphy pre-state = PHY 供电轨（下轮 RPMh LDO）；过 hsphy up 仍卡 canary/ep0 = 时钟域（下轮全块 BCR + GCTL）
+- 触摸/电池/显示等 t14 功能随 t17 一并首测（历轮 USB 楔死都发生在它们用户态可见之前，但内核路径已验证）
