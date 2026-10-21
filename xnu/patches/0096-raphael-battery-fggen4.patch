@@ -150,71 +150,71 @@
  /* SWEET battery hardware: PM6150 on SPMI SID 0, QG at 0x4800. */
  #define SWEETBATT_SID           0u
 @@ -55,10 +124,12 @@
-         IOTimerEventSource *fTimer;
-         bool fTimerAdded, fRunning, fReal;
-         int fLastMode;
-+        int fLastPercent;
-         void putNumber(const char *key, UInt32 value);
-         void putBool(const char *key, bool value);
-         void publish(unsigned percent, unsigned mv, int ma, bool external,
--            bool capable, bool charging, bool full, bool measured, bool currentValid);
-+            bool capable, bool charging, bool full, bool measured, bool currentValid,
-+            int timeRemaining = -1);
-         void poll(void);
-         static void timerFired(OSObject *owner, IOTimerEventSource *sender);
-         static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
+ 	IOTimerEventSource *fTimer;
+ 	bool fTimerAdded, fRunning, fReal;
+ 	int fLastMode;
++	int fLastPercent;
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+ 	void publish(unsigned percent, unsigned mv, int ma, bool external,
+-	    bool capable, bool charging, bool full, bool measured, bool currentValid);
++	    bool capable, bool charging, bool full, bool measured, bool currentValid,
++	    int timeRemaining = -1);
+ 	void poll(void);
+ 	static void timerFired(OSObject *owner, IOTimerEventSource *sender);
+ 	static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
 @@ -99,6 +170,7 @@
-                 }
-         }
-         fLastMode = -1;
-+        fLastPercent = -1;
-         return true;
+ 		}
+ 	}
+ 	fLastMode = -1;
++	fLastPercent = -1;
+ 	return true;
  }
  
 @@ -136,12 +208,12 @@
-         setExternalConnected(external);
-         setExternalChargeCapable(capable);
-         setIsCharging(charging);
--        setAtWarnLevel(false);
--        /* An uncalibrated voltage curve must not assert a critical shutdown. */
--        setAtCriticalLevel(false);
-+        setAtWarnLevel(measured && (percent <= 20u || mv <= 3450u));
-+        /* Real samples only: the fallback path must never assert a warning. */
-+        setAtCriticalLevel(measured && (percent <= 10u || mv <= 3350u));
-         setVoltage(mv);
-         setAmperage(ma);
--        setTimeRemaining(-1); /* Unknown; never publish zero minutes on error. */
-+        setTimeRemaining(timeRemaining); /* -1 = unknown; never a fake zero. */
-         setCycleCount(0);     /* Placeholder: cycle learning is not implemented. */
-         putBool("FullyCharged", full);
-         putBool("AppleRawExternalConnected", external);
+ 	setExternalConnected(external);
+ 	setExternalChargeCapable(capable);
+ 	setIsCharging(charging);
+-	setAtWarnLevel(false);
+-	/* An uncalibrated voltage curve must not assert a critical shutdown. */
+-	setAtCriticalLevel(false);
++	setAtWarnLevel(measured && (percent <= 20u || mv <= 3450u));
++	/* Real samples only: the fallback path must never assert a warning. */
++	setAtCriticalLevel(measured && (percent <= 10u || mv <= 3350u));
+ 	setVoltage(mv);
+ 	setAmperage(ma);
+-	setTimeRemaining(-1); /* Unknown; never publish zero minutes on error. */
++	setTimeRemaining(timeRemaining); /* -1 = unknown; never a fake zero. */
+ 	setCycleCount(0);     /* Placeholder: cycle learning is not implemented. */
+ 	putBool("FullyCharged", full);
+ 	putBool("AppleRawExternalConnected", external);
 @@ -153,7 +225,12 @@
-         putNumber("Temperature", 2500);
-         putBool("SweetBatteryHardwareSampleValid", measured);
-         putBool("SweetBatteryCurrentValid", currentValid);
+ 	putNumber("Temperature", 2500);
+ 	putBool("SweetBatteryHardwareSampleValid", measured);
+ 	putBool("SweetBatteryCurrentValid", currentValid);
 +#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
-+        /* Hardware monotonic SOC when measured; the fallback 100% is fake. */
-+        putBool("SweetBatterySOCEstimated", !measured);
++	/* Hardware monotonic SOC when measured; the fallback 100% is fake. */
++	putBool("SweetBatterySOCEstimated", !measured);
 +#else
-         putBool("SweetBatterySOCEstimated", measured);
+ 	putBool("SweetBatterySOCEstimated", measured);
 +#endif
-         putBool("SweetBatteryTemperatureEstimated", true);
-         putBool("SweetBatteryFallback", !measured);
-         putNumber("SweetBatteryPercent", percent);
+ 	putBool("SweetBatteryTemperatureEstimated", true);
+ 	putBool("SweetBatteryFallback", !measured);
+ 	putNumber("SweetBatteryPercent", percent);
 @@ -179,12 +256,12 @@
-         }
-         updateStatus(); /* Flush PS properties and send 0xe0024100 on change. */
-         int mode = measured ? 1 : 0;
--        if (mode != fLastMode) {
-+        if (mode != fLastMode || (int)percent != fLastPercent) {
-                 IOLog("SWEET BATTERY: %s, %u%% %umV external=%d charging=%d\n",
--                    measured ? SWEETBATT_GAUGE_NAME " / estimated SOC"
--                        : "static fallback",
-+                    measured ? SWEETBATT_GAUGE_NAME : "static fallback",
-                     percent, mv, external, charging);
-                 fLastMode = mode;
-+                fLastPercent = (int)percent;
-         }
+ 	}
+ 	updateStatus(); /* Flush PS properties and send 0xe0024100 on change. */
+ 	int mode = measured ? 1 : 0;
+-	if (mode != fLastMode) {
++	if (mode != fLastMode || (int)percent != fLastPercent) {
+ 		IOLog("SWEET BATTERY: %s, %u%% %umV external=%d charging=%d\n",
+-		    measured ? SWEETBATT_GAUGE_NAME " / estimated SOC"
+-			: "static fallback",
++		    measured ? SWEETBATT_GAUGE_NAME : "static fallback",
+ 		    percent, mv, external, charging);
+ 		fLastMode = mode;
++		fLastPercent = (int)percent;
+ 	}
  }
  
 @@ -234,6 +311,55 @@
@@ -222,112 +222,112 @@
  SweetBattery::poll(void)
  {
 +#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
-+        /* PM8150B fg-gen4 + SMB5, per vendor pm8150b.dtsi / fg-util.c /
-+         * smb5-reg.h. Every datum is hardware-maintained; shadow copies
-+         * reject torn samples. */
-+        uint8_t type = 0, sys = 0, usb = 0, chg = 0, chg2 = 0;
-+        uint8_t msoc = 0;
-+        uint16_t vraw = 0, iraw = 0;
-+        bool valid = fReal &&
-+            !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_TYPE, &type) &&
-+            type == 0x0du &&
-+            !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_SYS_BATT, &sys) &&
-+            (sys & 0x07u) == 0u && /* HW/ALG/CMP battery-missing bits */
-+            fgReadShadowByte(SWEETBATT_MSOC, SWEETBATT_MSOC_CP, &msoc) &&
-+            fgReadShadowWord(SWEETBATT_VBATT, SWEETBATT_VBATT_CP, &vraw) &&
-+            fgReadShadowWord(SWEETBATT_IBATT, SWEETBATT_IBATT_CP, &iraw) &&
-+            !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_USBIN_RT_STS, &usb) &&
-+            !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS1, &chg) &&
-+            !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS2, &chg2);
-+        /* vendor fg_get_battery_voltage(): uV = raw * 122070 / 1000 */
-+        unsigned mv = valid ?
-+            (unsigned)(((uint64_t)vraw * 122070u) / 1000000u) : 0u;
-+        valid = valid && mv >= 2800u && mv <= 4600u;
-+        if (!valid) {
-+                publish(100, 4200, 0, true, true, false, true, false, false);
-+                return;
-+        }
-+        unsigned percent = fgMonotonicPercent(msoc);
-+        bool external = (usb & SWEETBATT_USBIN_PLUGIN_BIT) != 0;
-+        bool capable = external; /* SMB5 charges autonomously on valid input. */
-+        unsigned state = chg & 7u; /* INHIBIT..DISABLE state machine */
-+        bool batOv = (chg2 & 0x02u) != 0; /* CHARGER_ERROR_STATUS_BAT_OV */
-+        bool charging = capable && state >= 1u && state <= 4u && !batOv;
-+        bool full = external && state == 5u && !batOv; /* TERMINATE_CHARGE */
-+        /* vendor fg_get_battery_current(): uA = sign16(raw) * 488281 / 1000,
-+         * positive while discharging; IOPMPowerSource wants charging > 0. */
-+        int sraw = (iraw & 0x8000u) ? (int)iraw - 65536 : (int)iraw;
-+        int ma = (int)-((int64_t)sraw * 488281u / 1000000u);
-+        /* Rough runtime from the live current against the nominal pack. */
-+        int minutes = -1;
-+        unsigned remaining = SWEETBATT_CAPACITY_MAH * percent / 100u;
-+        if (ma <= -50) {
-+                minutes = (int)((int64_t)remaining * 60u / -(int64_t)ma);
-+        } else if (charging && ma >= 50 && remaining < SWEETBATT_CAPACITY_MAH) {
-+                minutes = (int)(((int64_t)(SWEETBATT_CAPACITY_MAH - remaining) *
-+                    60u) / (int64_t)ma);
-+        }
-+        publish(percent, mv, ma, external, capable, charging, full, true,
-+            true, minutes);
++	/* PM8150B fg-gen4 + SMB5, per vendor pm8150b.dtsi / fg-util.c /
++	 * smb5-reg.h. Every datum is hardware-maintained; shadow copies
++	 * reject torn samples. */
++	uint8_t type = 0, sys = 0, usb = 0, chg = 0, chg2 = 0;
++	uint8_t msoc = 0;
++	uint16_t vraw = 0, iraw = 0;
++	bool valid = fReal &&
++	    !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_TYPE, &type) &&
++	    type == 0x0du &&
++	    !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_SYS_BATT, &sys) &&
++	    (sys & 0x07u) == 0u && /* HW/ALG/CMP battery-missing bits */
++	    fgReadShadowByte(SWEETBATT_MSOC, SWEETBATT_MSOC_CP, &msoc) &&
++	    fgReadShadowWord(SWEETBATT_VBATT, SWEETBATT_VBATT_CP, &vraw) &&
++	    fgReadShadowWord(SWEETBATT_IBATT, SWEETBATT_IBATT_CP, &iraw) &&
++	    !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_USBIN_RT_STS, &usb) &&
++	    !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS1, &chg) &&
++	    !sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS2, &chg2);
++	/* vendor fg_get_battery_voltage(): uV = raw * 122070 / 1000 */
++	unsigned mv = valid ?
++	    (unsigned)(((uint64_t)vraw * 122070u) / 1000000u) : 0u;
++	valid = valid && mv >= 2800u && mv <= 4600u;
++	if (!valid) {
++		publish(100, 4200, 0, true, true, false, true, false, false);
++		return;
++	}
++	unsigned percent = fgMonotonicPercent(msoc);
++	bool external = (usb & SWEETBATT_USBIN_PLUGIN_BIT) != 0;
++	bool capable = external; /* SMB5 charges autonomously on valid input. */
++	unsigned state = chg & 7u; /* INHIBIT..DISABLE state machine */
++	bool batOv = (chg2 & 0x02u) != 0; /* CHARGER_ERROR_STATUS_BAT_OV */
++	bool charging = capable && state >= 1u && state <= 4u && !batOv;
++	bool full = external && state == 5u && !batOv; /* TERMINATE_CHARGE */
++	/* vendor fg_get_battery_current(): uA = sign16(raw) * 488281 / 1000,
++	 * positive while discharging; IOPMPowerSource wants charging > 0. */
++	int sraw = (iraw & 0x8000u) ? (int)iraw - 65536 : (int)iraw;
++	int ma = (int)-((int64_t)sraw * 488281u / 1000000u);
++	/* Rough runtime from the live current against the nominal pack. */
++	int minutes = -1;
++	unsigned remaining = SWEETBATT_CAPACITY_MAH * percent / 100u;
++	if (ma <= -50) {
++		minutes = (int)((int64_t)remaining * 60u / -(int64_t)ma);
++	} else if (charging && ma >= 50 && remaining < SWEETBATT_CAPACITY_MAH) {
++		minutes = (int)(((int64_t)(SWEETBATT_CAPACITY_MAH - remaining) *
++		    60u) / (int64_t)ma);
++	}
++	publish(percent, mv, ma, external, capable, charging, full, true,
++	    true, minutes);
 +#else
-         uint8_t type, present, usb, path, charger, error, temperature;
-         uint16_t rawVoltage;
-         bool valid = fReal &&
+ 	uint8_t type, present, usb, path, charger, error, temperature;
+ 	uint16_t rawVoltage;
+ 	bool valid = fReal &&
 @@ -276,6 +402,7 @@
-         }
-         publish(full ? 100 : estimatePercent(mv), mv, ma, external, capable,
-             charging, full, true, currentValid);
+ 	}
+ 	publish(full ? 100 : estimatePercent(mv), mv, ma, external, capable,
+ 	    charging, full, true, currentValid);
 +#endif
  }
  
  void
 @@ -298,6 +425,41 @@
-         (void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
-         fReal = real == 1 && sweet_spmi_init() == 0;
-         if (fReal) {
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+ 	fReal = real == 1 && sweet_spmi_init() == 0;
+ 	if (fReal) {
 +#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
-+                /* One-shot fg-gen4/SMB5 probe: err/value pairs plus derived
-+                 * units make a single log line a complete verdict. */
-+                uint8_t type = 0, sys = 0, msoc = 0, msoccp = 0, usb = 0,
-+                    chg = 0, chg2 = 0, chg7 = 0;
-+                uint8_t v0 = 0, v1 = 0, vc0 = 0, vc1 = 0;
-+                uint8_t i0 = 0, i1 = 0;
-+                int e_type = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_TYPE, &type);
-+                int e_sys = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_SYS_BATT, &sys);
-+                int e_msoc = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_MSOC, &msoc) |
-+                    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_MSOC_CP, &msoccp);
-+                int e_v = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_VBATT, &v0) |
-+                    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_VBATT + 1, &v1) |
-+                    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_VBATT_CP, &vc0) |
-+                    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_VBATT_CP + 1, &vc1);
-+                int e_i = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_IBATT, &i0) |
-+                    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_IBATT + 1, &i1);
-+                int e_usb = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_USBIN_RT_STS, &usb);
-+                int e_chg = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS1, &chg);
-+                int e_c2 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS2, &chg2);
-+                int e_c7 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS7, &chg7);
-+                unsigned vraw = (unsigned)v0 | ((unsigned)v1 << 8);
-+                unsigned vcp = (unsigned)vc0 | ((unsigned)vc1 << 8);
-+                int iraw = (int)((unsigned)i0 | ((unsigned)i1 << 8));
-+                int sraw = (iraw & 0x8000) ? iraw - 65536 : iraw;
-+                IOLog("SWEET BATTERY: probe type=%d/%#x sys=%d/%#x "
-+                    "msoc=%d/%#x,%#x(%u%%) v=%d/%#x,%#x(%umV) i=%d/%#x(%dmA) "
-+                    "usb=%d/%#x chg=%d/%#x c2=%d/%#x c7=%d/%#x\n",
-+                    e_type, type, e_sys, sys, e_msoc, msoc, msoccp,
-+                    fgMonotonicPercent(msoc), e_v, vraw, vcp,
-+                    (unsigned)(((uint64_t)vraw * 122070u) / 1000000u),
-+                    e_i, iraw & 0xffff,
-+                    (int)-((int64_t)sraw * 488281u / 1000000u),
-+                    e_usb, usb, e_chg, chg, e_c2, chg2, e_c7, chg7);
++		/* One-shot fg-gen4/SMB5 probe: err/value pairs plus derived
++		 * units make a single log line a complete verdict. */
++		uint8_t type = 0, sys = 0, msoc = 0, msoccp = 0, usb = 0,
++		    chg = 0, chg2 = 0, chg7 = 0;
++		uint8_t v0 = 0, v1 = 0, vc0 = 0, vc1 = 0;
++		uint8_t i0 = 0, i1 = 0;
++		int e_type = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_TYPE, &type);
++		int e_sys = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_SYS_BATT, &sys);
++		int e_msoc = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_MSOC, &msoc) |
++		    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_MSOC_CP, &msoccp);
++		int e_v = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_VBATT, &v0) |
++		    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_VBATT + 1, &v1) |
++		    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_VBATT_CP, &vc0) |
++		    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_VBATT_CP + 1, &vc1);
++		int e_i = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_IBATT, &i0) |
++		    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_IBATT + 1, &i1);
++		int e_usb = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_USBIN_RT_STS, &usb);
++		int e_chg = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS1, &chg);
++		int e_c2 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS2, &chg2);
++		int e_c7 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS7, &chg7);
++		unsigned vraw = (unsigned)v0 | ((unsigned)v1 << 8);
++		unsigned vcp = (unsigned)vc0 | ((unsigned)vc1 << 8);
++		int iraw = (int)((unsigned)i0 | ((unsigned)i1 << 8));
++		int sraw = (iraw & 0x8000) ? iraw - 65536 : iraw;
++		IOLog("SWEET BATTERY: probe type=%d/%#x sys=%d/%#x "
++		    "msoc=%d/%#x,%#x(%u%%) v=%d/%#x,%#x(%umV) i=%d/%#x(%dmA) "
++		    "usb=%d/%#x chg=%d/%#x c2=%d/%#x c7=%d/%#x\n",
++		    e_type, type, e_sys, sys, e_msoc, msoc, msoccp,
++		    fgMonotonicPercent(msoc), e_v, vraw, vcp,
++		    (unsigned)(((uint64_t)vraw * 122070u) / 1000000u),
++		    e_i, iraw & 0xffff,
++		    (int)-((int64_t)sraw * 488281u / 1000000u),
++		    e_usb, usb, e_chg, chg, e_c2, chg2, e_c7, chg7);
 +#else
-                 /* One-shot register probe with per-field errors: any poll failure
-                  * after this is attributable to data, not to a dead read path. */
-                 uint8_t type = 0, sub = 0, st1 = 0, st2 = 0, usb = 0, path = 0,
-@@ -320,6 +482,7 @@
-                     e_type, type, e_sub, sub, e_st1, st1, e_st2, st2,
-                     e_v, vraw, e_i, iraw, e_usb, usb, e_path, path,
-                     e_chg, chg, e_ce, chgerr, e_ct, temp);
+ 		/* One-shot register probe with per-field errors: any poll failure
+ 		 * after this is attributable to data, not to a dead read path. */
+ 		uint8_t type = 0, sub = 0, st1 = 0, st2 = 0, usb = 0, path = 0,
+@@ -324,6 +486,7 @@
+ 		    e_type, type, e_sub, sub, e_st1, st1, e_st2, st2,
+ 		    e_v, vraw, e_i, iraw, e_usb, usb, e_path, path,
+ 		    e_chg, chg, e_ce, chgerr, e_ct, temp);
 +#endif
-         }
-         /* Publish a complete source BEFORE registerService wakes powerd. */
-         poll();
+ 	}
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
