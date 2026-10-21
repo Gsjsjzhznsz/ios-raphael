@@ -384,3 +384,26 @@ Stage Summary:
 - 双根因闭环：USB 挂死 = DWC_usb31 与经典 DWC3 的复位后同步差异（Linux 依据原文级对齐）；普查卡死 = SPMI 观察命令无全局串行 + 崩溃后 PMIC 跨热重启状态残留
 - t15 判决树：面包屑走到 running + 主机枚举 + ping 192.168.7.2 = USB 全胜；停在哪条面包屑之后 = 该步寄存器操作挂死（拍照即可定位）；t14 的显示/息屏/亮度/充电功能随 t15 首测
 - 运维规则确立：任何崩溃后先长按电源彻底关机，再进 fastboot（清 PMIC 跨重启状态）
+
+---
+Task ID: 19
+Agent: Super Z (main agent)
+Task: t15 实测解读（USB 面包屑全过后整机冻结+自动重启）→ 环绕控制台取证定位死点 → SUSPHY 根因 → 0101 修复 → t16/r24 发布
+
+Work Log:
+- 证据：用户 22:26 回传定格照片（t15，发布后 10 分钟内刷机实测）；upload/sweet-log.bin 与 21:36 截图经时间戳+内容指纹（76%/4065mV/-387mA、census apld=297）确认为上轮 t13/t14 遗留证据，非本轮
+- VLM 逐行 OCR 照片：0099 面包屑全过（VBUS override 0x10100000 → soft reset 1ms → settle → 事件缓冲 0x1047dc000 → ep0 DEPSTARTCFG 打印）→ 定格；底部"进度条"经像素级分析证伪（= QSCRATCH 换行残影，全图无 UI 元素）
+- 取证方法突破：fbcon 是环绕式控制台（pe_serial.c fbcon_row=(fbcon_row+1)%fbcon_rows，73 行×67 列，FBCON_SCALE=2；QSCRATCH 行恰 67 字符换行指纹互证）→ 屏幕顶部=最新圈层、底部 lap 接缝 → 照片布局证明控制台死在 ud_epcmd 内部（无 timeout/status/"TRB armed" 打印 = DEPCMD 读总线级挂死，非命令超时）
+- 日志环盲区确认：sweet_log_append 只挂 _cnputs（printf 路径），kprintf（Skywalk/DLIL/netagent/bsd_autoconf 自检行）直上屏幕不进环 → 环行号≠屏幕行号，环不能用于重建屏幕布局
+- 根因（对照 Linux 主线源码）：t15 probe 读到 GUSB2PHYCFG 0x00100240，bit6 SUSPHY=1 = ABL 留下的 PHY 挂起态；Linux dwc3_hs_phy_setup() 显式注释"Ensure SUSPHY is cleared prior to phy init"，完整顺序= phy_setup(SUSPHY 清)→phy_init→CSFTRST→phy_power_on→事件缓冲→gadget/DEPCMD；DWC31 上端点寄存器块（0xc800）被挂起 PHY 时钟门控 → 第一条 DEPCMD 访问挂 AXI → config-NoC 全核共享 → 整机冻结；经典 DWC3（SM7150，0x5533320a）无此门控故上游从未暴露；t14 卡点同源（当时无面包屑误判为复位 settle 问题，0099 治标未治本）
+- "自动重启"定性：XNU 侧无看门狗（SweetWatchdog=空壳），复位来自硬件侧路径（RPM/TZ/NoC 错误升级），挂死修掉即消失；若复发需掐表"定格→重启"秒数做指纹（固定=看门狗/可变=错误升级），NOTES 存档为 open question
+- 0101 补丁（29 行纯新增，字节级脚本 scripts/apply_0101_susphy.py 生成——MultiEdit 再次把 tab 写成空格，Task 16 规矩生效）：清 GUSB2PHYCFG.SUSPHY（软复位前，+10ms 恢复，保持清零）+ DEPCMD(0) 纯读金丝雀（复发时屏幕自分类：卡 canary=仍被门控→下轮 QUSB2 PHY 完整重初始化；过 canary 卡 DEPSTARTCFG=命令语义→下轮对齐 Linux gadget start 全序列）；往返校验干净应用
+- 参照缓存：Linux dwc3（gadget/core/ep0/core.h）+ phy-qcom-qusb2.c + dwc3-qcom.c 入 work/ref/dwc3/（googlesource 拉取，GitHub raw 被限流）
+- CI run 39623374559（eba5c47）SUCCESS，内核 ea39593f…；t16 打包六重校验全过（ANDROID!v2/shim/DTB==t7/ADT 8 核 12588B/cmdline 330B==t15/markers 0090-0101 含 SUSPHY+canary/cfg 嵌入/entry 0xfffffe000748f488 谱系一致）；clean 30a978e1… / debug 3584be8e…
+- 发布 r24（419713034）：t16 clean/debug + FLASH-T16 + T16-SHA256SUMS；删 r23；发行版=rootfs + t7(r15) + r24
+- README 双语状态区/下载表/刷机指南/SHA 全面刷新；NOTES 存档四条（SUSPHY 事实/环绕控制台取证法/kprintf 日志盲区/自动重启 open question）
+
+Stage Summary:
+- t15 定性：USB 楔死定位到第一条端点命令的寄存器读（总线级），根因=PHY 挂起时钟门控，0099 settle 属治标
+- t16 判决：SUSPHY cleared → canary → ep0 armed → running(DSTS) → 锁屏 → 主机枚举 ECM + ping 192.168.7.2 = USB 全胜；判读树与两级兜底路径就绪
+- 证据链方法沉淀：环绕控制台几何、照片像素级证伪、环日志 kprintf 盲区——后续轮次取证基建

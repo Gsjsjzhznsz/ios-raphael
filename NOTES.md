@@ -340,3 +340,58 @@ board-patch content via scripts (scripts/apply_t14_battery.py,
 scripts/apply_t14_display.py) that do byte-exact anchored replacements
 with explicit \t on the git-committed canonical base, then roundtrip
 (git checkout HEAD -- file; git apply patch; diff saved==applied).
+
+## USB DWC_usb31: the SUSPHY wedge (t15 round, root cause)
+
+raphael probe reads GUSB2PHYCFG 0x00100240: bit 6 (SUSPHY) SET - ABL
+leaves the fastboot PHY in suspend. Linux dwc3_hs_phy_setup() carries an
+explicit comment, "Ensure the GUSB2PHYCFG.SUSPHY is cleared prior to phy
+init", and the full Linux order is phy_setup (SUSPHY clear) -> phy_init
+(QUSB2 registers) -> CSFTRST -> phy_power_on -> event buffers -> gadget
+start (DEPCMDs). On DWC31 the endpoint register block (0xc800 DEPCMD*)
+is clock-gated while the PHY is suspended: the FIRST DEPCMD access never
+completes on the bus and takes the config-NoC (all-core shared) down -
+no DEPCMD timeout print ever fires because the read itself is stuck.
+t14 and t15 wedged at the same instruction; t14 just had no breadcrumbs
+between "soft reset done" and the ep0 commands, so it LOOKED like the
+reset-settle issue. 0099's 100 ms settle was treating a symptom.
+Classic DWC3 (SM7150, GSNPSID 0x5533320a) does not gate the endpoint
+block this way, which is why upstream never saw it. Fix (0101): clear
+SUSPHY before CSFTRST, keep it cleared (we poll; no auto-suspend), plus
+a pure DEPCMD(0) canary read before the first command so a recurrence
+self-classifies on screen (canary wedge = still clock-gated / past
+canary = command semantics).
+
+## Screen forensics on a wrap-around console (t15 round, method)
+
+The SWEET fbcon (pexpert/arm/pe_serial.c) does NOT scroll:
+fbcon_row = (fbcon_row + 1) % fbcon_rows - 73 rows x 67 cols at
+FBCON_SCALE 2 on the 1080x2340 panel (the QSCRATCH dump line wraps at
+exactly 67 chars - fingerprint). The screen therefore shows the newest
+lines at the TOP (rows 0..r) and the older lines continuing below, with
+the lap seam at the bottom. Reading a freeze photo bottom-up around the
+seam recovers the exact last-executed printf even when hundreds of lines
+were printed. FBCON_FG is 0xffffffff - the "green" look is the panel
+pixel path, not a color choice. VLM OCR of a screen photo is reliable
+enough for register values; a claimed "progress bar" was actually the
+wrapped last text line blurred.
+
+## kprintf vs printf: the ring-log blind spot (t15 round)
+
+sweet_log_append() hooks _cnputs (the printf/console path). kprintf goes
+straight to the pe_serial fbcon and BYPASSES the ring - so
+Skywalk/DLIL/SKT/netagent/bsd_autoconf self-test lines (printed via
+kprintf under -enable_kprintf_spam) appear on SCREEN but NOT in
+sweet-log.bin. Ring stream line numbers therefore diverge from screen
+row numbers; never use ring line numbers to reconstruct screen layout,
+and never assume a missing line means it never printed.
+
+## Post-wedge auto-reboot: mechanism unknown (open)
+
+XNU arms nothing (SweetWatchdog is a no-op stub that just accepts
+watchdogd check-ins), yet a config-NoC wedge is followed ~1-2 min later
+by an automatic reset to the stock chain (MIUI). The reset must come
+from a hardware/firmware-side path (RPM, TZ, or NoC error escalation).
+Fingerprint to collect if it recurs: the freeze->reboot delay in
+seconds (fixed = watchdog, variable = error escalation). Fixing the
+wedge makes the question moot.
