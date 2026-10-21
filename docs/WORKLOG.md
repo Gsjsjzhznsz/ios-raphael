@@ -188,3 +188,24 @@ Stage Summary:
 - shim 链路真机验证完毕；下一轮 XNU 首跳，XNU 内置三段早期诊断开箱即用，无需新内核构建
 - 关键认知：屏幕 = 第一诊断通道；v2 头 = 唯一被 ABL 接受的格式；18d1/Android = ABL fastboot gadget 残留
 - 等 diag5 回传：白条是否出现、SWEET EARLY 走到第几行、定格画面全景、掐表时间线
+
+---
+Task ID: 10
+Agent: Super Z (main agent)
+Task: t7 实测"其他全绿、触摸仍死"日志分析 → CI 级根因（push 构建 SWEET 回退）→ 修复 + t8 交付
+
+Work Log:
+- sweet-log.bin（4MiB 环）解码：唯一一次启动，boot-args = t7 r15（cpus=8/sweetfb_noconsole=1/sweetfb_hz=60/sweettouchflip=0）；触摸线：gcc vote=0x4bc0000 rcg=0x80000000、分支 0x18008 HW-gated(0x80000002) ok / 0x18144 still halted(0x80004220) 继续、se7 fw=0x303 proto=3 status=0 tx/rx 32 位 FIFO 全过、"need ABL-loaded I2C firmware and 32-bit FIFOs; probes skipped"
+- 寄存器语义（Linux geni-se.h 核对）：0x68=GENI_FW_REVISION_RO、0xe24/0xe28=HW FIFO 参数、0x908=GENI_IOS、0x64=GENI_IF_DISABLE_RO（bit0=接口禁用）→ skip 触发点
+- 关键矛盾：日志分支偏移 0x18008/0x18144 ∈ SWEET 列表，而 raphael 列表应为 0x1e004/0x1e008/0x1e3a4
+- CI 日志取证（run 39469756410，a4ca660=Head of r15）：event=push；937/937 条 clang 命令仅 -DARM64_BOARD_CONFIG_SWEET。对照 fecc50a（t2-t6 时代内核，run 39268242631）= workflow_dispatch + machine_config=RAPHAEL，962/962 带 -DRAPHAEL —— 0089 commit message 引用的 "0x1e008 halted" 正是 r14（dispatch、RAPHAEL）t6 日志的真实 wrap2 s_ahb 卡点；r15/t7（push）退化成 SWEET，0089 从未被测试
+- 根因：xnu.yml push 触发时 inputs 为空 → MACHINE_CONFIG 回退 'SWEET' → 所有 raphael #if 增量（触摸 SE19/GT9889/TLMM 供电/音量上键/USB/0086/0089）预处理剔除；显示/ADT/UFS 因板级无关而幸存，掩盖了问题
+- 修复 ea69ad1：push 默认也 RAPHAEL + Build 改 tee build.log + "Verify board macro" 步骤（RAPHAEL 构建下编译命令零 -DRAPHAEL 即 fail）；新内核 run 39517478755 复验 937/937 带 -DRAPHAEL，sweet_touch.c 双宏齐备
+- t8 打包：t7.img 提取 shim/ADT/DTB/cmdline（tools 复用 repack-boot-v2 解析）→ mkpayload 新内核（entry 0xfffffe000748b488 与启动谱系一致，nsegs=10）→ 模板头装配（scripts/t8_build.py：仅 ramdisk_size 变化，shim/DTB/ADT/cmdline 逐字节不变）；payload 字符串普查确认 RAPHAEL 触摸打印全在、SWEET 触摸打印全消
+- Release raphael-touch-r16：raphael-t8-clean.img（1bcdfbb9…）、raphael-t8-debug.img（f6bcfc9f…，+sweethidtest=15）、FLASH-T8.md、T8-SHA256SUMS.txt；README 状态/下载表更新；t8_extract/t8_build 工具入库
+- 新工具：scripts/t8_extract.py（boot v2 组件提取）、scripts/t8_build.py（模板装配+六重校验）；ST FTS 澄清：raphael 二供为 ST FingerTipS（fts_521@0x49），非 FocalTech
+
+Stage Summary:
+- 触摸失灵定性：既非 SE19 固件未加载、非 I2C 地址错误、也非二供批次——raphael 触摸代码根本没编进 t7 内核
+- t8 为首次"RAPHAEL 编译 + 0089"组合；预期日志：分支 0x1e004/0x1e008(HW-gated ok)/0x1e3a4 + TLMM reset(gpio54) 供电 + probe 0x5d ver-reg / probe ST FTS 0x49
+- CI 侧回归防线就位：宏断言防复发；回退 = 任意 t 系列直启
