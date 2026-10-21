@@ -279,3 +279,24 @@ Stage Summary:
 - t10 一次刷机三信息：8 核回归成败 + 总线电平判读（idle/live 分离上拉轨 vs 引擎时钟两大理论）+ ST FTS 真探针
 - 判读树：bus idle sda/scl=1 → 嫌疑转串行时钟（DFS/RCG）；=0 → avdd 供电轨问题；probe 0x5d err=0 → 触摸活
 - 若 t10 卡 bootstrap → 8 核 ADT 是第二变量 → 退 t9，下轮 2/4 核折半
+
+---
+Task ID: 14
+Agent: Super Z (main agent)
+Task: t10 实测解读（触摸仍死 + 电池识别错误）→ 触摸根因定位（TLMM SOUTH tile）+ t11（0093 触摸根因 + 0092 电池）发布 + 发行版清理
+
+Work Log:
+- t10 日志解码（sweet-log.bin 4MiB，本次上传）：8/8 CPUs initialized（8 核回归成功，bootstrap 卡死与卡顿双双关闭）；`bus idle vdd=0 avdd=0 sda=0 scl=0 reset=0 ios=0` + `bus live sda=0 scl=0 irq=0 ios=0`（六个电平读数全零）；probe 0x5d err=60（TX 已发但总线无应答）；probe ST FTS 0x49 err=60（0091 的 5 字节修复生效，命令真的发出去了，同样超时）→ 两个地址完全一致的超时 = 总线物理层死
+- 电池问题命中：`SWEET BATTERY: static fallback, 100% 4200mV external=1 charging=0` + boot-args `sweetbattery=0` —— 电池驱动从未开启，iOS 里恒定 100% 是写死的假数据，不是"识别错误"
+- 触摸根因定位（0093，f5d231a）：SM8150 TLMM 不是平坦一块 —— GPIO 寄存器 = TLMM 基址 + tile 偏移 + 0x1000×编号（WEST 0x00100000 / EAST 0x00500000 / NORTH 0x00900000 / SOUTH 0x00D00000，pinctrl-sm8150.c 实锤）；触摸 6 GPIO（54/57/58/98/100/122）全在 SOUTH tile（PINGROUP 逐条验证；102-104=NORTH、105=WEST 交错排布，证实必须逐 GPIO 查表）→ 真窗口 = 0x03D00000；驱动从 0083 起映射 0x03000000（整个 TLMM 区开头 0x100000 的未实现空洞，读全零写无效）→ 触摸 IC 从未上电、SDA/SCL 从未复用到 qup19 —— 与 t10 全零判决行完美互证
+- 上轮遗留问题修正：work/ 里遗留的 0093 补丁草稿是针对 pre-0091 树生成的（内含已入库的 0091 内容，直接用会冲突）→ 在 work/t11/0093base 重建 post-0091 基准（baseline 构建树 + 应用 in-repo 0091），从 work/xnu 工作树重新提取纯 diff；追加 `TLMM-south` 运行时正向标记（启动行 printing mapping GCC/TLMM-south/SE7），往返 apply 校验通过
+- 0092 复核（fa957b0 已在上轮提交并 CI 成功）：PM8150B fg-gen4 QG（SPMI SID 2，peripheral 0x40）真实电压/电流/电量 + SMB5 充电器状态；SweetBattery IOLog 判读行 = `SWEET BATTERY: PM8150B QG / estimated SOC, XX% XXXXmV external=? charging=?`（真实）vs `static fallback`（假数据）
+- t11 打包（scripts/t11_package.py 更新）：t7 骨架 + 0092+0093 内核（CI run 39582204279，内核 SHA 63dba04e…，二进制标记逐项验证：TLMM-south 在/旧串消/PM8150B QG 在/PM6150 消/kryo485 在）+ t8 8 核 ADT + cmdline sweetbattery=0→1；六重校验全过（ANDROID!v2/shim/DTB==t7/ADT 8 核/cmdline battery ON/markers 0090-0093/entry 谱系一致）；clean bd75bc2d… debug df4690b6…
+- 发布 raphael-touch-r19（419415295）：t11 clean/debug + FLASH-T11.md + T11-SHA256SUMS；同时删除被取代的 r17/t9（单核）与 r18/t10（诊断使命完成）—— 发行版现为 rootfs + r15/t7 + r19/t11（落实用户"只保留 t7 和 ios16 + 当前版"指令）
+- 文档：README 状态区（8 核实机确认/触摸根因/电池真相）、下载表（t11 推荐 + t7 回退）、刷机指南改指 t11、docs/FLASH-T11.md 入库；worklog 双写
+
+Stage Summary:
+- 本轮双根因：触摸 = TLMM SOUTH tile 基址错误（0083 起所有 GPIO 写入落空）；电池 = sweetbattery=0 静态假数据
+- t11 一次刷机双判决：触摸看 `TLMM-south` 标记 + bus idle/live 电平 + probe 0x5d（err=0 即活）；电池看锁屏百分比（不再恒 100% 即活）+ `SWEET BATTERY: PM8150B QG / estimated SOC` 行
+- 若触摸仍超时且 sda/scl=0 → GPIO 使能≠电源轨真起来，下轮查供电轨真身（RPMh/LDO 投票）；若 err=6/NACK → 总线活了但器件地址或 IC 异常
+- 电池若仍 static fallback → 回报 SPMI 判读行（mapping failed / unsupported arb / timeout），下轮排查 SPMI arbiter 配置
