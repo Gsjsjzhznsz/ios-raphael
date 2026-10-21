@@ -97,17 +97,17 @@ jobs:
       - name: "Guard - no silently skipped patches"
         working-directory: dxb
         run: |
-          # darwin-xnu-build's patch loop only WARNS on a failed patch
-          # ("Skipping patch ... already upstream, previously applied, or
-          # malformed") and builds anyway: the 0096 round produced a kernel
-          # missing the whole battery rework with a green checkmark
-          # (run 39593077146, diagnosed 2026-10-21). Fail loudly instead.
-          if grep -q "Skipping patch" build.log; then
-            grep "Skipping patch" build.log
-            echo "::error::A patch failed to apply and was SKIPPED - the kernel would silently miss those changes."
+          # darwin-xnu-build's patch loop only WARNS on a failed patch and
+          # builds anyway: the 0096 round produced a kernel missing the whole
+          # battery rework with a green checkmark (run 39593077146, diagnosed
+          # 2026-10-21). Blacktop's own upstream patches (TrustCache, sonoma
+          # flavor guards) skip benignly on every build - ignore those.
+          if grep "Skipping patch" build.log | grep -Eq "[0-9]{4}-(raphael|sweet)-"; then
+            grep "Skipping patch" build.log | grep -E "[0-9]{4}-(raphael|sweet)-"
+            echo "::error::A board patch failed to apply and was SKIPPED - the kernel would silently miss those changes."
             exit 1
           fi
-          echo "no skipped patches"
+          echo "no board patches skipped"
 
       - name: Package build tree for local compiles
         if: always()

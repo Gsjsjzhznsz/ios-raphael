@@ -171,7 +171,17 @@
  	return true;
  }
  
-@@ -136,12 +208,12 @@
+@@ -126,7 +198,8 @@
+ 
+ void
+ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+-    bool capable, bool charging, bool full, bool measured, bool currentValid)
++    bool capable, bool charging, bool full, bool measured, bool currentValid,
++    int timeRemaining)
+ {
+ 	/* Use consistent mAh units (DT nominal). powerd computes C*100/M. */
+ 	const unsigned capacity = (SWEETBATT_CAPACITY_MAH * percent + 50u) / 100u;
+@@ -136,12 +209,12 @@
  	setExternalConnected(external);
  	setExternalChargeCapable(capable);
  	setIsCharging(charging);
@@ -188,7 +198,7 @@
  	setCycleCount(0);     /* Placeholder: cycle learning is not implemented. */
  	putBool("FullyCharged", full);
  	putBool("AppleRawExternalConnected", external);
-@@ -153,7 +225,12 @@
+@@ -153,7 +226,12 @@
  	putNumber("Temperature", 2500);
  	putBool("SweetBatteryHardwareSampleValid", measured);
  	putBool("SweetBatteryCurrentValid", currentValid);
@@ -201,7 +211,7 @@
  	putBool("SweetBatteryTemperatureEstimated", true);
  	putBool("SweetBatteryFallback", !measured);
  	putNumber("SweetBatteryPercent", percent);
-@@ -179,12 +256,12 @@
+@@ -179,12 +257,12 @@
  	}
  	updateStatus(); /* Flush PS properties and send 0xe0024100 on change. */
  	int mode = measured ? 1 : 0;
@@ -217,7 +227,7 @@
  	}
  }
  
-@@ -234,6 +311,55 @@
+@@ -234,6 +312,55 @@
  void
  SweetBattery::poll(void)
  {
@@ -273,7 +283,7 @@
  	uint8_t type, present, usb, path, charger, error, temperature;
  	uint16_t rawVoltage;
  	bool valid = fReal &&
-@@ -276,6 +402,7 @@
+@@ -276,6 +403,7 @@
  	}
  	publish(full ? 100 : estimatePercent(mv), mv, ma, external, capable,
  	    charging, full, true, currentValid);
@@ -281,7 +291,7 @@
  }
  
  void
-@@ -298,6 +425,41 @@
+@@ -298,6 +426,41 @@
  	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
  	fReal = real == 1 && sweet_spmi_init() == 0;
  	if (fReal) {
@@ -323,7 +333,7 @@
  		/* One-shot register probe with per-field errors: any poll failure
  		 * after this is attributable to data, not to a dead read path. */
  		uint8_t type = 0, sub = 0, st1 = 0, st2 = 0, usb = 0, path = 0,
-@@ -324,6 +486,7 @@
+@@ -324,6 +487,7 @@
  		    e_type, type, e_sub, sub, e_st1, st1, e_st2, st2,
  		    e_v, vraw, e_i, iraw, e_usb, usb, e_path, path,
  		    e_chg, chg, e_ce, chgerr, e_ct, temp);
