@@ -567,3 +567,81 @@ whether the top lines are chronologically impossible for a single boot.
   binary (preprocessed out by the board-aware guard) while ldoa2/ldoa5/
   ldoa12, "hsphy post-LDO COMMON0", "gadget start aborted before PHY reset"
   and "not a supported raphael USB LDO request" must be present.
+
+## t18 verdict: votes complete, rails never land (byte-replicated readback)
+
+The t18 photo is ONE probe pass sliced by the wrap console lap: rows below
+the lap seam (clk dump/GSNPSID/DCFG/GEVNT/ifnet/fsw/usb-up/SUSPHY/pre-state)
+are the OLDER lap; rows above (votes/post-LDO/femto/.../ep0 print) are the
+NEWER lap. There is no second boot and no second probe (sweet_ufs_rootdev
+is guarded by su.ready and has a single call chain). The machine still dies
+inside the FIRST ep0 command write - two verified blank rows after the
+"ep0 DEPSTARTCFG/..." print, no timeout/TRB-armed/running line ever, so the
+bounded 1000-iteration CMDACT loop cannot help: the dwc_rd(DEPCMD) itself
+hangs on the AXI bus. RUN/STOP was never set; the host never enumerated.
+
+The LDO votes DID change the PHY readback (pre-state 0x88888888/0x66666666
+vs post-LDO 0x06060606 vs femto-up 0x3b3b3b3b/0x02020202) - the rails are
+moving - but every post-vote readback is "single byte replicated x4", i.e.
+the register file (vdda18 domain) is still brown-out marginal. Linux's
+femto write_mask is read-modify-write, so on healthy hardware these
+registers MUST read back clean: byte-replication = power really is not up.
+
+Suspects, in order: (1) no settling delay after the votes - PMIC5 LDOs
+step voltage with a stepper that takes up to several ms, and our post-LDO
+readback lands inside the ramp window (the ep0 commands fire ~105 ms later
+but the femto writes were latched during the ramp); (2) cmd-db returned
+non-linear addresses (ldoa2 0x40f00, ldoa5 0x40b00, ldoa12 0x42000 - a
+uniform +0x100 LDO-A map would give 0x41200/0x41900), so the votes may
+land on the wrong rails; needs SPMI readback of the actual LDOA2/A5/A12
+status to adjudicate; (3) vote encoding is otherwise sound (addresses,
+VRM offsets voltage+8/mode+0/enable+4, TCS completion semantics all match
+the sm7150-validated upstream implementation).
+
+VLM OCR lesson: every '8' in the photo reads back as '0' (rsc
+0x18220000 -> 0x10220000, "880 mV" -> "800 mV", "1800 mV" -> "1000 mV";
+"3072 mV" has no '8' and survives) - the log values actually matched the
+code all along. Always re-derive digits containing 8 from the log ring.
+
+## PM8150 PON registers: the authoritative reset classifier (0104 target)
+
+imem 0x146bf65c is written by the LINUX reboot path (0x776655xx family)
+and ABL CLEARS it every boot - useless for classifying unexpected resets.
+The authoritative source is the PM8150 PON block via SPMI (sid 0, base
+0x800): PON_PERPH_SUBTYPE +0x05 (0x04/0x05 = GEN2), PON_REASON1 0xC0
+(bit0 hard reset, bit4 USB-chg, bit7 KPD...), WARM_RESET_REASON1 0xC2,
+POFF_REASON1 0xC5 (bit0 SOFT, bit1 PS_HOLD, bit2 PMIC_WD, bit5 KPDPWR&
+RESIN, bit11 charger, bit12 TFT thermal, bit13 UVLO), OFF_REASON 0xC7
+(bit7 POFF_SEQ, bit6 FAULT_SEQ, bit5 S3_RESET_SEQ), FAULT_REASON1/2
+0xC8/0xC9 (PBS watchdog, MBG, OVLO/UVLO, AVDD_RB...), S3_RESET_REASON
+0xCA, SOFT_RB_SPARE 0x8F. Classification: POFF PS_HOLD/SOFT with imem
+0x65c==0 => EL3/AOP-initiated (our suspected path); FAULT_*/S3_* =>
+PMIC-side; PMIC_WD => PMIC watchdog. APSS watchdog (0x17c10000, bark
+11 s + bite) is armed by the kernel driver, NOT by ABL - ruled out by the
+stable USB-off control runs. Stock kernels print "PMIC@SID0 Power-on/off
+reason:" each boot - boot LineageOS once to calibrate the decoder. DRAM
+survives warm reset: a reserved heartbeat page (CNTVCT + event ring +
+panic string) printed at next boot is a valid forensic channel; a known-
+class calibration reset is a direct write of 0 to PS_HOLD 0x0C264000.
+
+## Android host screen-off -> USB global suspend (the next threat)
+
+Linux hub.c usb_port_suspend(): "For system suspend, we do not need to
+enable the suspend feature on individual USB-2 ports. The devices will
+automatically go into suspend a few ms after the root hub stops sending
+packets. The USB 2.0 spec calls this 'global suspend'." When the host
+Android phone's screen turns off and the system suspends, our gadget
+enters L2 within milliseconds - 30 s screen timeout + Doze lands exactly
+in the 40-50 s window we have been watching. Once the gadget actually
+runs, the poll loop must read DSTS.USBLNKST every tick and MUST NOT issue
+Start Transfer in L2/L1 (DWC31 programming guide: the command may never
+complete); suspend events are only delivered if DEVTEN.U3L2L1SUSPEN
+(bit6) is set. Keeping GUSB2PHYCFG.SUSPHY=0 permanently keeps utmi_clk
+running during L2 (register access stays safe) and is exactly what
+Qualcomm mainline does on sm8150 (dis_u2_susphy_quirk + dis_u3_susphy_
+quirk + dis_enblslpm_quirk on both dwc3 nodes). Separately:
+GUSB3PIPECTL.SUSPHY (bit17) left set by the bootloader causes register
+write failures -> SMMU fault -> system crash on QC targets (commit
+9bdbd5286ea5, tested a year without side effects) - clear it alongside
+GUSB2PHYCFG.SUSPHY. USB2 L1 needs both a BOS LPM-capable descriptor and
+DCFG.LPM_CAP - we have neither, so L1 cannot reach us.

@@ -491,3 +491,26 @@ Stage Summary:
 - t17 案子破了 90%：死因不是寄存器序列（0102 全对）而是漏了 Linux 的第一步——PHY 三条模拟供电轨从未上电（重复字节垃圾回读是铁证）；45 秒重启 = 触摸倒计时触发，症状而已
 - t18 判决树（FLASH-T18）：三票成功 + post-LDO 值离开垃圾 → up 回读正常 → ep0 TRB armed → running → 主机枚举 ECM + ping 通 = USB 全胜；票失败则干净中止锁屏，RPMH 打印自分类下一轮（命名/继承冲突/超时→SPMI 直写兜底）
 - 方法沉淀：跨启动屏幕残留的识别法（顶行时序不可能属同一启动即断双启动）；printf 中途截断 = 异步异常打断而非实参读挂死
+
+---
+Task ID: 23
+Agent: Super Z (main agent)
+Task: t18 实测深度排查（用户报告 ~50s 重启 + 要求"深度搜索彻底排查"）→ 照片逐行取证 + 双路深度检索 + 全链路代码审计 → 根因定级与 t19 方案
+
+Work Log:
+- 照片逐字转录（scripts/t18_photo_bands.py 三段 + t18_photo_strips.py 三窄条，2-3x 灰度增强，VLM 逐行）：
+  - 判读重大修正：屏幕不是"USB 全绿后重启"，而是环绕控制台一圈 lap 的切片——底部 22 行（clk dump/GSNPSID/DCFG/GEVNTADR/ifnet/fsw/NET/usb up/SUSPHY/pre-state 0x88888888）是 lap-1 残留（旧），顶部 46 行（votes/post-LDO/femto/QSCRATCH/VBUS/软复位/settle/事件缓冲/canary/ep0 print）是 lap-2（新）。全屏 = 同一次 probe，无二次启动、无二次 probe（sweet_ufs_rootdev 有 su.ready 守卫 + 单调用链，代码排除重入）
+  - 死点不变：最后输出 = "ep0 DEPSTARTCFG/SETEPCONFIG/SETTRANSFRESOURCE"，其后两行纯空白（strip-mid 证实无 timeout/failed/TRB armed/running 行）→ 机器仍楔死在第一条 ep0 命令写（AXI 级，ud_epcmd 的 dwc_rd 本身挂死所以 1000 次有界循环救不了）；"running" 从未到达、RUN/STOP 从未置位 → 主机从未枚举过任何 USB 设备
+  - 0103 的 LDO 投票"完成"但 PHY 寄存器堆仍没真正上电：post-LDO 读回 CTRL2 0x06060606、femto up 读回 COMMON1 0x3b3b3b3b / REFCLK 0x02020202 —— 全是"单字节复制×4"的半崩坏模式，且与 pre-state（0x88888888/0x66666666）不同 = 投票确实改变了 PHY 状态（轨在动），但寄存器堆供电仍不稳定
+  - VLM 8→0 误读规律：所有 '8' 被读成 '0'（rsc 0x18220000→0x10220000、880mV→800mV、1800mV→1000mV、3072mV 无 8 不变）→ 日志实际值与代码完全一致（3072/880/1800 + 正确 RSC 地址），投票数值无错
+- 代码审计：sweet_rpmh.c（RSC/TCS 地址 ✓ 0x18220000/0x18220d00、投票序列 电压+8→模式+0→使能+4 ✓、TCS 完成判定 ISSUED|COMPLETE ✓、与 sm7150 上游真机验证过的实现一致）；cmd-db 查址返回 ldoa2=0x40f00/ldoa5=0x40b00/ldoa12=0x42000 —— 非线性（+0x100 应为 0x41200/0x41900），存疑待 SPMI 实测裁决；femto 偏移逐一比对 phy-qcom-snps-femto-v2.c 全对；Linux 的 femto write_mask 是读-改-写 = 真机寄存器必须可干净读回 → 字节复制垃圾 = 供电真没到位，不是"本来就读不回"
+- 深度检索 A（复位机制取证）：imem 0x146bf65c 由 Linux 重启路径写入且 ABL 每次开机清除 = 对意外复位无取证价值；权威分类器 = PM8150 PON 寄存器组（SPMI sid0 基址 0x800：PON_REASON1 GEN2 0xC0 / WARM_RESET_REASON1 0xC2 / POFF_REASON1 0xC5 / OFF_REASON 0xC7 / FAULT_REASON1/2 0xC8-0xC9 / S3_RESET_REASON 0xCA / SOFT_RB_SPARE 0x8F，分类矩阵：PS_HOLD/SOFT=EL3 软复位、PMIC_WD=PMIC 看门狗、FAULT_*=PBS/热/UVLO、S3_*=硬复位链）；APSS 看门狗（0x17c10000，bark 11s）由内核驱动而非 ABL 使能 = 与 t13/t14 稳定运行互证排除；TZ 侧复位指纹 = POFF PS_HOLD/SOFT + imem 0x65c==0；DRAM 温复位保内容 → 心跳页取证法可行；标定手段 = XNU 直写 0x0C264000 PS_HOLD 制造已知类别复位
+- 深度检索 B（USB 主机侧）：Android 主机息屏→系统 suspend→root hub 停发 SOF→几毫秒内设备自动进 L2（global suspend，hub.c 原文）；30s 息屏+Doze ≈ 40-50s 窗口 = USB 真正跑通后的下一颗雷，届时需轮询 DSTS.USBLNKST + L2 期间禁发 Start Transfer；高通主线 sm8150.dtsi 对两个 dwc3 永久禁用 SUSPHY/ENBLSLPM/U1/U2（dis_u2_susphy_quirk 等，与我们"SUSPHY 永清零"一致，官方背书）；GUSB3PIPECTL.SUSPHY（bit17）置 1 时寄存器写失败→SMMU fault→整机崩溃（commit 9bdbd5286ea5，高通实测一年无副作用）= 我们未清的遗留嫌疑位；DEPCMD 前 ENBLSLPM+SUSPHY 必清（DWC31 编程指南 3.2.2）；L1 由 BOS LPM 位+DCFG.LPM_CAP 双重门控，我们天然免疫；cdc_ether 支持 autosuspend 但需 remote-wakeup 配合
+- 根因链定级（与 40→45→50s 漂移吻合）：probe 每轮变长（0102 femto +0103 投票）→ ep0 楔死点后移；楔死后 45s 触摸线程倒计时到期在残废系统上触发 RPM/TZ 升级 → 温复位。重启仍是症状，不是独立故障；UTMI 时钟缺失的元凶从"SUSPHY 位"→"PHY 未上电"→本轮收敛到"LDO 投票未真正落到轨"（或 cmd-db 地址错、或缺 settle 延时——PMIC5 LDO 电压阶跃用 stepper 爬升可达数 ms，我们的 post-LDO 读回恰在爬升窗口）
+- t19 方案（0104）：① 开机读 PON/WDT0/imem/TCSR 打印"SWEET RST:"行分类上次复位；② 三票后 +20ms settle 再读 femto，若仍是单字节复制垃圾 → 干净中止（不进 ep0，锁屏存活拍照定位，彻底终结 50s 重启循环）；③ SPMI 读 LDOA2/A5/A12 实际电压状态寄存器裁决 cmd-db 地址疑点；④ 清 GUSB3PIPECTL.SUSPHY（高通 sm8150 实锤位）；⑤ sweettouchdelay= 调节旋钮做 45s 相关性 A/B
+- 证据请求（零构建）：t18 sweet-log.bin（OrangeFox tail -c 4198400）；掐表"屏幕定格时刻 vs 重启时刻"差值（若恒 ≈35-40s = 触摸升级链实锤）；主机侧确认枚举从未发生
+
+Stage Summary:
+- t18 破案：表面"50s 重启"之下，USB 链路仍死在 t16 同一点（第一条 ep0 命令写楔死）；0103 投票完成了 TCS 握手但 PHY 寄存器堆仍半崩坏（字节复制读回），轨没有真正上稳
+- 双路深度检索产出三条硬资产：PON 复位分类矩阵（0104 取证）、GUSB3PIPECTL.SUSPHY 嫌疑位、Android 主机 L2 息屏挂起时序（USB 跑通后的下一防线）
+- t19 = 取证 + 自保 + 裁决三合一：复位原因打印、垃圾读中止、SPMI 轨实测；sweet-log.bin 是当前最缺的一块拼图
