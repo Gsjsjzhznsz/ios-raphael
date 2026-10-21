@@ -8,7 +8,7 @@
 > 本项目为实验性质，操作会**彻底清空手机全部数据**，严禁在主力机上操作！
 > This project is experimental. Flashing **erases all phone data**. Never use your daily driver.
 
-## 📊 当前状态（2026-10-21, r24/t16）
+## 📊 当前状态（2026-10-21, r25/t17）
 
 | 子系统 | 状态 | 说明 |
 |---|---|---|
@@ -18,7 +18,7 @@
 | 触摸 | ✅ 实测可用 | GT9886 厂商级 bring-up：真寄存器图 + 784 字节面板配置下发（双供应商）+ doze 控制 |
 | 电池 | ✅ 真实读数 | fg-gen4 硬件电量计：真 SOC/电压/电流（影子校验）+ 低电警告 + 时间剩余；**t14 新增充电状态 5 秒快轮询 + 插拔即日志**（APSD 充电器类型 / 输入限流 / 电源路径全落盘） |
 | 亮度 / 息屏 | 🔧 t14 引入（待实测） | DSI DCS 亮度通道（`sweetfb_bright=` 初始亮度，iOS 滑条联动下一轮接入）+ **息屏立即全黑**（面板清屏 + DCS 0x28，替代旧的多步渐暗，`sweetfb_fade=1` 可回退）；t14/t15 都死在 USB 阶段，这些功能随 t16 首测 |
-| USB | 🔧 t16 根因修复（待实测） | t15 实测：面包屑全过（VBUS/软复位/settle/事件缓冲）但**第一条端点命令（DEPCMD）总线级挂死**（环绕控制台取证定位，无超时打印 = 读永不清零）→ 根因：**ABL 留下的 PHY 处于挂起态**（GUSB2PHYCFG 0x00100240，bit6 SUSPHY=1），DWC31 上端点寄存器块被挂起 PHY 时钟门控，Linux `dwc3_hs_phy_setup()` 要求 phy init 前显式清 SUSPHY。t16：软复位前清 SUSPHY + DEPCMD 金丝雀探针。冻结后的“自动重启”是硬件侧路径（RPM/TZ/NoC）反应，挂死修掉即消失 |
+| USB | 🔧 t17 femto PHY 完整启动（待实测） | t16 实测：ue0 已 up、DLIL/Skywalk 全过，canary **读**通过但第一条端点命令**写**总线级挂死，~40s 后硬件侧重启 → 根因两级修正：① sm8150 HS PHY 是 **7nm Synopsys femto**（`phy-qcom-snps-femto-v2.c`；上轮的 qusb2-v2 参照是错代驱动）② ABL 交接后 PHY 要么断电（冷启动，QSCRATCH 全零）要么挂起（热启动）——**残局永远不够，必须像 Linux 每次开机从头启动 PHY**。t17：寄存器级移植 `qcom_snps_hsphy_init()`（QUSB2PHY_BCR 0x12000 脉冲 + 15 步序列 + vendor 板级调优 X1=0x83/X2=0x2c）。raphael 实锤 **HS-only 单 PHY**（vendor 与 mainline DTS 双证，QMP USB3 显式移除）。冻结后的“自动重启”是 RPM/TZ/NoC 硬件侧升级（t13/t14 稳定运行从不重启 = 无全局看门狗），楔死修掉即消失 |
 | GPU | ❌ 无驱动 | 界面为 CPU 软渲染，滑动卡顿属正常 |
 | Wi-Fi / 蓝牙 / 相机 / 音频 / 传感器 / 基带 | ❌ 未开始 | — |
 
@@ -34,8 +34,8 @@
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-t16-susphy-clean.img` | **当前首刷推荐（r24）**：USB SUSPHY 根因修复（清 GUSB2PHYCFG.SUSPHY + DEPCMD 金丝雀）+ t15 全部（SPMI 串行化/显示缩放/即时息屏/亮度通道/充电快轮询/USB 网卡） |
-| `raphael-t16-susphy-debug.img` | r24 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
+| `raphael-t17-hsphy-clean.img` | **当前首刷推荐（r25）**：7nm HS PHY femto 完整启动（Linux 1:1 移植 + vendor 板级调优）+ t16 全部（SUSPHY/金丝雀/DWC31 settle/SPMI 门/显示缩放/即时息屏/亮度通道/充电快轮询） |
+| `raphael-t17-hsphy-debug.img` | r25 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
 | `raphael-t7-touchfix-clean.img` | 回退/对照（SWEET 编译，已知可启动，触摸死） |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷，**rootfs 无需重刷**，与 t 系列内核通用） |
 
@@ -47,8 +47,8 @@ t7-clean:  91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe （�
 t12-clean: 3725736f0773ede73b59a35d1cabddc92decbc58aaa37f8a375fa09d46459c6b （触摸闭环）
 t13-clean: 3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f
 t14-clean: 3374ac69efb17155de6a61792e5753053c25669317bb5464aa5fa284e8da3a3c （USB 挂死，勿刷）
-t16-clean: 30a978e156594979e1e03535a54aad6771ff6fac6ec20aa10ce416913fe4e721
-t16-debug: 3584be8e0f744b3eba12b335a8170626e88fbb1b29235490b96a2f7e5dd59129
+t17-clean: 80b148a30e04a0aca912358f55cffa4c007860f0a2983ec21f052310c2bdd654
+t17-debug: 2db77b0a282e6a85221c812f2daf7334ecfae80a394b8a9f1493ca6e1f73251b
 ```
 
 ---
@@ -133,7 +133,7 @@ fastboot boot 最新版的-clean镜像.img
 
 - 注意：引导后需等待 **4-8 分钟**，屏幕会出现 iOS 锁屏界面。只要机身微热，绝对不要提前强制重启。
 - 由于无 GPU 驱动，界面基于 CPU 软渲染，滑动会卡顿（正常现象）。触摸已适配（如个别批次失灵请回报日志）。
-- t16 预期：屏幕依次打出 `SUSPHY cleared` → `DEPCMD(0) canary` → `ep0 setup TRB armed` → `running (DSTS...)`；息屏应**立即全黑**；顶部时间/电量完整显示；主机（Termux 手机）枚举出 USB 网卡后 `ping 192.168.7.2`（`tools/sweet-usbnet.sh` 实时看日志）。**刷前先彻底关机一次**（长按电源 10 秒以上再进 fastboot）——崩溃后 PMIC 坏状态会跨热重启保留，冷启动清除。若再冻结：记录定格行 + 掐表“定格→自动重启”秒数（判读树见 FLASH-T16）。
+- t17 预期：屏幕依次打出 `hsphy pre-state` → `hsphy up (femto)` → `canary` → `ep0 setup TRB armed` → `running (DSTS...)`；进锁屏后主机（Termux 手机）枚举出 USB 网卡，`ping 192.168.7.2` 通 = **USB 全胜**（40 秒重启应随之消失）。**刷前先彻底关机一次**（长按电源 10 秒以上再进 fastboot）。若再冻结：冻结点自分类——卡 `hsphy pre-state` = PHY 供电轨问题（下轮 RPMh LDO 投票）；过 `hsphy up` 卡 canary/ep0 = 时钟域问题（下轮全块 BCR + GCTL）（判读树见 FLASH-T17）。
 - **USB 实时日志（新）**：电脑端 `sudo tools/sweet-usbnet.sh`（Linux/Mac），脚本会配置 192.168.7.1 并用 `nc -ukl 5140` 接收实时内核日志——以后排查问题不用再进 Recovery。
 
 ---
@@ -163,7 +163,7 @@ adb pull /tmp/sweet-log.bin
 
 > ⚠️ Experimental. Flashing **erases all data** — never on a daily driver. The project only overwrites `userdata`; you can return to Android anytime with MiFlash + the official K20 Pro fastboot package.
 
-## Status (2026-10-21, r24/t16)
+## Status (2026-10-21, r25/t17)
 
 - ✅ Boot chain proven on device: shim → XNU → iOS lock screen (`fastboot boot`, nothing permanent)
 - ✅ All 8 cores (`8/8 CPUs initialized`)
@@ -171,7 +171,7 @@ adb pull /tmp/sweet-log.bin
 - ✅ Touch (GT9886 vendor-grade bring-up, confirmed working)
 - ✅ Battery: real fg-gen4 hardware gauge (SOC/voltage/current, shadow-verified) + 5-second charger-input polling with APSD/ICL/power-path transition logging
 - 🔧 Brightness DCS channel (`sweetfb_bright=`) and **instant screen-off** (panel clear + DCS 0x28; `sweetfb_fade=1` restores the old fade) — landed in t14; t14/t15 both died in USB init, first real test in t16
-- 🔧 USB (t16 root-cause fix, pending test): t15 passed every breadcrumb but **wedged on the first endpoint command** (wrap-console forensics; a bus-level wedge, no timeout print). Root cause: **ABL leaves the PHY suspended** (GUSB2PHYCFG 0x00100240, bit 6 SUSPHY=1); on DWC_usb31 the endpoint register block is clock-gated while the PHY is suspended, and Linux `dwc3_hs_phy_setup()` explicitly clears SUSPHY before phy init. t16 clears SUSPHY before the soft reset and adds a DEPCMD(0) canary read. The post-freeze "auto-reboot" is a hardware-side path (RPM/TZ/NoC) reacting to the wedged kernel
+- 🔧 USB (t17 full PHY bring-up, pending test): t16 got further than ever (ue0 up, DLIL/Skywalk green) but the canary READ passed while the first endpoint-command WRITE still wedged the bus (~40 s later: hardware-side reboot). Two-level correction: ① sm8150's HS PHY is the **7nm Synopsys femto** (`phy-qcom-snps-femto-v2.c`; the t15-round qusb2-v2 reference was the wrong generation), ② after the ABL handoff the PHY is powered-down (cold boot, QSCRATCH regs 0x0) or suspended (warm) — **leftovers never work, the PHY must be brought up from scratch like Linux does at every probe**. t17 ports `qcom_snps_hsphy_init()` register-for-register (QUSB2PHY_BCR 0x12000 pulse + the 15-step sequence + vendor board tunes X1=0x83/X2=0x2c). Confirmed HS-only single-PHY design (vendor AND mainline DTS; QMP USB3 explicitly removed). The post-freeze "auto-reboot" is RPM/TZ/NoC escalation (t13/t14 stable boots never rebooted = no global watchdog)
 - 🔧 SPMI: all observer commands (keys/census/battery) now go through one global gate, Linux-style; GPIO census is opt-in (`sweetcensus=1`)
 - ❌ No GPU driver (CPU software rendering, UI is slow), no Wi-Fi/BT/camera/audio/modem yet
 
@@ -179,8 +179,8 @@ adb pull /tmp/sweet-log.bin
 
 | File | Purpose |
 |---|---|
-| `raphael-t16-susphy-clean.img` | **Recommended (r24)**: USB SUSPHY root-cause fix + all t15/t14 features (SPMI gate, display scaling, instant off, brightness, charger polling, USB network) |
-| `raphael-t16-susphy-debug.img` | Same, with the on-screen console always on (photograph the last lines if it hangs) |
+| `raphael-t17-hsphy-clean.img` | **Recommended (r25)**: full 7nm HS PHY femto bring-up (Linux 1:1 port + vendor board tunes) + all t16 features (SUSPHY, canary, DWC31 settle, SPMI gate, display scaling, instant off, brightness, charger polling) |
+| `raphael-t17-hsphy-debug.img` | Same, with the on-screen console always on (photograph the last lines if it hangs) |
 | `raphael-t7-touchfix-clean.img` | Known-good fallback |
 | `ios16-root.simg.part-00~05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs (16G HFS+ sparse image; no need to re-flash when kernels update) |
 
@@ -196,7 +196,7 @@ adb pull /tmp/sweet-log.bin
    ```
    Keep these somewhere safe — they can unbrick the phone.
 3. **Flash the rootfs** (~10–20 min): `fastboot -S 512M flash userdata ios16-root.simg`. If Xiaomi fastboot appears frozen afterwards, force-restart into fastboot with **Power + Vol-**; the data is intact.
-4. **Boot**: `fastboot boot raphael-t16-susphy-clean.img`, wait **4–8 minutes** for the lock screen. The body staying warm is normal; do not force-reboot early. Touch works; expect software-rendering lag. **Power the phone fully off before fastboot** after any crash/abnormal boot — PMIC state survives warm reboots.
+4. **Boot**: `fastboot boot raphael-t17-hsphy-clean.img`, wait **4–8 minutes** for the lock screen. The body staying warm is normal; do not force-reboot early. Touch works; expect software-rendering lag. **Power the phone fully off before fastboot** after any crash/abnormal boot — PMIC state survives warm reboots.
 
 ## Troubleshooting
 
@@ -219,4 +219,4 @@ adb pull /tmp/sweet-log.bin
 - [MakrSas/ios-topaz](https://github.com/MakrSas/ios-topaz) — sibling port (Redmi Note 12 4G) used for cross-checking
 - The XNU kernel and iOS userspace are © Apple Inc. This project is for research only.
 
-> 判读树与取证命令：Release `raphael-touch-r24` 内 `FLASH-T16.md`（历史判读树 FLASH-T6~T15 保留在 docs/）。
+> 判读树与取证命令：Release `raphael-touch-r25` 内 `FLASH-T17.md`（历史判读树 FLASH-T6~T15 保留在 docs/）。
