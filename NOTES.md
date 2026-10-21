@@ -413,3 +413,99 @@ Rules learned:
   a minute or two (warmed caches linger). Verify via the asset API
   endpoint (Accept: application/octet-stream, by asset id) which always
   returns the real stored bytes; the public URL catches up shortly.
+
+## sm8150 HS PHY = 7nm Synopsys "femto", NOT qusb2-v2 (t16 round correction)
+
+The Task-19 reference (drivers/usb/phy/phy-qcom-qusb2.c, qcom,qusb2-v2-phy,
+TUNE1 0x240 / PWR_CTRL1 0x210 / PLL_STATUS 0x1a0 map) is the WRONG driver
+for raphael. sm8150's HS PHY is the 7nm Synopsys PHY handled by
+drivers/phy/qualcomm/phy-qcom-snps-femto-v2.c, compatibles
+"qcom,sm8150-usb-hs-phy" + "qcom,usb-snps-hs-7nm-phy" (verified in
+mainline sm8150.dtsi and the femto driver's of_match; code search shows
+the compatible strings appear ONLY in DTS files - the driver matches the
+sm8150 primary compatible). Correct register map (all offsets from the
+phy base 0x088e2000, region 0x400):
+
+  UTMI_CTRL0     0x3c  SLEEPM bit0, OPMODE 4:3, TERMSEL bit5
+  UTMI_CTRL1     0x40  XCVRSEL bit0
+  UTMI_CTRL5     0x50  POR bit1
+  COMMON0        0x54  SIDDQ bit2, RETENABLEN bit3, FSEL 6:4
+  COMMON1        0x58  VBUSVLDEXTSEL0 bit4, PLLBTUNE bit5
+  COMMON2        0x5c  VREGBYPASS bit0
+  CTRL1          0x60  VBUSVLDEXT0 bit0
+  CTRL2          0x64  AUTO_RESUME bit0, SUSPEND_N bit2, SUSPEND_N_SEL bit3
+  OVERRIDE_X0..X3 0x6c/0x70/0x74/0x78  board tuning bytes
+  CFG0           0x94  DATAPATH_CTRL_OVERRIDE_EN bit0, CMN_CTRL_OVERRIDE_EN bit1
+  REFCLK_CTRL    0xa0  REFCLK_SEL 1:0 (default 10b)
+
+The old probe dump read nonexistent offsets - its output was meaningless.
+
+## femto bring-up sequence (Linux qcom_snps_hsphy_init, ported as 0102)
+
+GCC_QUSB2PHY_PRIM_BCR = GCC 0x12000 (gcc-sm8150.c reset table; also there:
+USB30_PRIM_BCR 0xf000, QUPV3 wrappers 0x18000/0x1e000). Sequence:
+BCR assert >=100us -> release; CFG0 CMN_CTRL_OVERRIDE_EN; POR=1; FSEL=000;
+PLLBTUNE; REFCLK_SEL=10b; VBUSVLDEXTSEL0; VBUSVLDEXT0; [board overrides];
+VREGBYPASS; SUSPEND_N_SEL|SUSPEND_N; SLEEPM; SIDDQ=0 (power on); POR=0
+(release); SUSPEND_N_SEL=0; CMN override off. Order inside dwc3_core_init:
+phy_setup (GUSB2PHYCFG SUSPHY clear) -> phy_init (this) -> DCTL CSFTRST ->
+gadget. Linux re-sets SUSPHY=1 after phy init (phy ops need low-P states);
+we deliberately keep it 0 (polled, no PHY power management) - P0 forever.
+
+raphael board tunes (vendor raphael dtsi qcom,param-override-seq):
+OVERRIDE_X1 = 0x83 (hs-amplitude 3 + preemphasis-amplitude 2),
+OVERRIDE_X2 = 0x2c (crossover 3 + output-impedance 2). The pairs are
+(value, offset) - 0x70/0x74 are femto OVERRIDE_X1/X2, confirming the map.
+
+## raphael USB runs HS-only (vendor AND mainline)
+
+Vendor raphael dtsi: &usb0 dwc3@a600000 { maximum-speed = "high-speed";
+usb-phy = <&usb2_phy0>, <&usb_nop_phy> } with &usb_qmp_dp_phy disabled
+(QMP combo reserved for DisplayPort). Mainline raphael (patchew series +
+howtocuddle): &usb_1_dwc3 { maximum-speed = "high-speed"; phys =
+<&usb_1_hsphy>; /* Remove USB3 phy */ }. So the gadget never needs the
+QMP USB3/PIPE path - the femto HS PHY alone is the complete bring-up.
+
+## t16 screen decode (wrap-console, pointer at row 9)
+
+Full chronological tail reconstructed: probe head (GDSC/clocks/GSNPSID/
+DCFG/GEVNT) -> ud_if_create (ifnet ue0 attach, address, up err 0) ->
+SUSPHY 0x00102400->0x00102400 (already clear on the cold path) -> QSCRATCH
+dump HS/SS_PHY_CTRL = 0x00000000 (block was RESET at handoff - cold boot
+after full power-off, unlike t15's warm leftovers) -> VBUS override wrote
+0x10100000/0x61000000 -> soft reset 1ms -> settle -> event buffer ->
+DEPCMD(0) canary 0x00000000 (READ completes) -> "ep0 DEPSTARTCFG..." ->
+FREEZE inside the first ud_epcmd WRITE. The "^NRL_CFG 0x00000004" at the
+top of the photo is the wrapped tail of the QSCRATCH GENERAL_CFG print.
+DEPCMD reads ride the AHB bus fine; the command WRITE starts the endpoint
+state machine, which is clocked from the PHY's UTMI clock - powered-down
+PHY (cold) or suspended PHY (warm, t15) = dead clock = AXI stall = config-
+NoC wedge (all cores) = hardware-side reset ~40 s later (RPM/TZ/NoC error
+escalation; NOT a watchdog - t13/t14 stable boots never rebooted, and the
+vendor charger wd-bark-time-secs=16 is a different subsystem entirely).
+
+## K20 Pro reverse-engineering projects (research sweep, user request)
+
+- howtocuddle/xiaomi_raphael: REAL daily-driver mainline project - Gentoo
+  aarch64 (OpenRC, sxmo/swayfx) on kernel 6.18.0-sm8150. Tree carries
+  modified/new kernel sources: fts_touch ftsIO fix, DW9763 focus actuator,
+  IMX586 + S5K3L6 camera sensors, CAMSS SM8150 support, TFA9874 speaker amp
+  (QUAT MI2S), qdsp6 multi-port routing, sm8150-xiaomi-raphael.dts +
+  sm8150.dtsi. Their sm8150.dtsi usb_1_hsphy node: clocks = <&rpmhcc
+  RPMH_CXO_CLK> "ref", resets = <&gcc GCC_QUSB2PHY_PRIM_BCR> - the 7nm
+  femto takes CXO directly (no ahb2phy branch - matches our 0087 clock
+  table note). Audio saga documented: dual pd-mapper QMI conflict, SLPI
+  watchdog poisoning ADSP (fix: disable SLPI).
+- postmarketOS raphael: device-xiaomi-raphael + linux-xiaomi-raphael (6.5
+  vendor fork, NOT mainline - a separate lineage from howtocuddle).
+- Mainline raphael: patchew "[PATCH v2 0/3] Add Xiaomi Redmi K20 Pro"
+  (pc1598@mainlining.org) - the DTS basis we already track.
+
+## If the femto init still wedges: PHY LDO checklist
+
+Mainline raphael hsphy supplies: vdda-pll <&vdd_usb_hs_core>, vdda33
+<&vdda_usb_hs_3p1>, vdda18 <&vdda_usb_hs_1p8> - all RPMh LDOs we do not
+vote. If t17 still freezes at/near the hsphy pre-state print, or the
+readbacks look wrong, the LDOs were dropped at the ABL handoff and the
+next round needs RPMh LDO voting (RSC 0x18220000 / TCS 0x18220d00 facts
+already in this file).
