@@ -300,3 +300,22 @@ Stage Summary:
 - t11 一次刷机双判决：触摸看 `TLMM-south` 标记 + bus idle/live 电平 + probe 0x5d（err=0 即活）；电池看锁屏百分比（不再恒 100% 即活）+ `SWEET BATTERY: PM8150B QG / estimated SOC` 行
 - 若触摸仍超时且 sda/scl=0 → GPIO 使能≠电源轨真起来，下轮查供电轨真身（RPMh/LDO 投票）；若 err=6/NACK → 总线活了但器件地址或 IC 异常
 - 电池若仍 static fallback → 回报 SPMI 判读行（mapping failed / unsupported arb / timeout），下轮排查 SPMI arbiter 配置
+
+---
+Task ID: 15
+Agent: Super Z (main agent)
+Task: t11 实测解读（触摸总线已通但帧不动 + 电池仍 fallback）→ 爬透 raphael 逆向资源 → 0094 GT9886 配置下发 + 0095 电池 sid 修复 → t12 发布
+
+Work Log:
+- t11 日志解码（sweet-log.bin 4MiB）：8/8 CPUs（延续）；`mapping GCC/TLMM-south/SE7` 0093 生效；`bus idle vdd=0x3 avdd=0x3 sda=0x1 scl=0x1`（供电轨+总线全通）；`probe 0x5d ver-reg err=0`（IC 应答！32 字节真实读回）但 `probe raw 0x8240: 00 00 02 d2 ff ff f9 ad...` 非 ASCII；`selected GT9889` 后每次轮询 `report err=5 irq=0x40000001`（DONE+TX_WM、无 RX、无 NACK）；电池 `SPMI arb=0x50000000 APIDs=512` 但仍 `static fallback`（无 timeout 行 = 静默失败）
+- 逆向研究（用户点名要求）：爬 LineageOS/android_kernel_xiaomi_sm8150（raphael 内核）—— drivers/input/touchscreen/xiaomi/goodix_driver_gt9886 全套（core/i2c/cfg_bin/gtx8_update）+ raphael-sm8150.dtsi 触摸节点 + firmware/goodix_gt9886_cfg_f11.bin.ihex（vendor 配置 blob 就在内核仓库）+ drivers/power/supply/qcom/qg-reg.h + pm8150b.dtsi + Linux 主线 spmi-pmic-arb.c + i2c-qcom-geni.c，全部下载到 work/ref/ 供后续轮次引用
+- 触摸三大发现：① GT9886 "normandy" 寄存器图来自 cfg bin reg 表（vendor 直接使用）：pid@0x4535=ASCII "9886"、sensor-id@0x4541(mask 0x0f)、版本块@0x452c(72B 和零)、命令@0x6f68、配置窗口@0x6f78、**触摸帧@0x4100**（bit7=触摸事件、b[1]&15=点数、8字节点、整帧 4+8n 字节和为零、清帧=写 0）—— t8 以来读的 0x8240/0x824E 只是碰巧 ACK 的地址；② IC 每次开机必须下发 784 字节面板配置（0xff→0x80→0x82→写 784B→0x83→0xff 命令握手 + doze 0xAA/0xBB 协议），不下发就没有触摸帧；解析 vendor blob（ihex→bin→2×905B 包=const(56B)+reg表(65B)+784B 配置，双供应商 sensor0/sensor1，44 bag 校验全零）→ 生成 bsd/dev/gt9886_cfg.h 嵌入内核；③ t11 轮询全灭元凶 = 0x49 ST FTS 探针 NACK 后 TX FIFO 残留 5 字节投毒（每次后续传输先发陈旧字节→DONE 提前→sent!=nt→err=5，与 t11 日志完美互证）→ 探针删除 + touch_msg_run TX 改水位驱动流式写入（单条写上限 6→800 字节，配置写 786B 单条完成）
+- 电池根因：SPMI 观察者命令对照 Linux pmic_arb_fmt_cmd_v2 = `opcode<<27 | sid<<20 | addr<<4 | len-1`，我们漏了 sid 位域 —— SWEET（PM6150=SID0）无害，raphael PM8150B=SID2（pm8150b.dtsi fg-batt-soc@4000 + 中断声明双重确认）每次都读错 PMIC → type!=0x0D → 静默 fallback；修复 + SweetBattery::start 加一次性 11 字段探针（type/sub/st1/st2/v/i/usb/path/chg/err/temp 逐字段带错误码）
+- 0094 补丁（834b776）：GT9886 全套 bring-up（pid 校验非"9886"则带证据停止——固件更新路径未建；sensor-id 选配置；sensor0=x2x+y2y 翻转 per DT；doze 禁用后保持唤醒适配轮询模式；request 事件记一次+清帧）；0095 补丁（130937a）：sid 位域 + 探针；CI run 39588429883 一次通过，内核 78cbcaaf…，标记逐项验证（GT9886 新行全在/0x49 与 GT9889 旧串全消/两份 784B 配置字节级嵌入验证）
+- t12 打包（scripts/t12_package.py）：t7 骨架 + 0094+0095 内核 + 8 核 ADT + cmdline 同 t11；六重校验 + 配置嵌入断言全过；clean 3725736f… debug 8dc5b5a9…
+- 发布 raphael-touch-r20（419459117）+ 删除 r19 → 发行版现为 rootfs + r15/t7 + r20/t12；README 状态区/下载表/刷机指南/docs/FLASH-T12.md 全面更新；worklog 双写
+
+Stage Summary:
+- 本轮双根因均来自对 vendor 实现的忠实对照（不再猜测）：触摸 = 寄存器图错 + 缺配置下发 + 0x49 投毒三重叠加；电池 = SPMI 命令缺 sid 位域
+- t12 判决：`GT9886 pid err=0 [39 38 38 36]` → 身份确认；`cfg send … err=0` → 配置入 IC 上手滑；`SWEET BATTERY: probe type=0/0xd` → 电池读通；方向不对回报 sensor id/flip 值
+- 兜底：pid 非 9886 → 固件下发路径（gtx8_update.c 已在 work/ref 备好）；cfg send 卡 0x82 → 回报握手行；电池 probe 有 -1 → APID/observer 层问题（dump APID 表）
