@@ -168,3 +168,60 @@ controller: `androidboot.usbcontroller=a600000.dwc3`.
 - mainline sm8150.dtsi / gcc-sm8150.c — USB address and clock table above.
 - postmarketOS wiki (xiaomi-raphael) and the LineageOS raphael device tree —
   recovery, kernel-fork and bring-up pointers.
+
+## Battery: PM8150B fg-gen4 (t13 / 0096 research, 2026-10-21)
+
+The PM8150B fuel gauge is fg-gen4, NOT a QG (QG is the sm8250+ PMIC gauge).
+Split peripherals, all on SPMI SID 2 (vendor pm8150b.dtsi):
+
+- `fg-batt-soc@0x4000`: PERPH_TYPE +0x04 = 0xd, monotonic SOC +0x09
+  (0-255, shadow copy +0x0A; vendor fg_get_msoc() percent mapping:
+  255->100, 0->0, else round((raw-1)*98/253)+1)
+- `fg-batt-info@0x4100`: SYS_BATT +0x07 (battery-missing bits 0-2),
+  VBATT +0xA0 / shadow +0xA6 (uV = raw*122070/1000, 0x8000 ~= 4000 mV),
+  IBATT +0xA2 / shadow +0xA8 (uA = sign16(raw)*488281/1000, discharge > 0)
+- SMB5 charger: CHGR@0x1000 BATTERY_CHARGER_STATUS_1 +0x06 state machine
+  (0 INHIBIT, 1 TRICKLE, 2 PRE, 3 FULLON, 4 TAPER = charging, 5 TERMINATE
+  = full, 7 DISABLE), USBIN@0x1300 INT_RT_STS +0x10 BIT(4) = plugged.
+- Key sources: qpnp-fg-gen4.c, fg-util.c (getters + shadow-check pattern),
+  fg-reg.h, smb5-reg.h, pm8150b.dtsi (LineageOS android_kernel_xiaomi_sm8150,
+  branch lineage-19.1, drivers/power/supply/qcom/). Cached under work/ref/fg.
+- If the monotonic SOC ever freezes while voltage keeps moving, the FG
+  algorithm needs the battery profile via fg-memif SRAM DMA (fg-memif@0x4300,
+  MEM_IF_* registers in fg-reg.h) - next research item.
+
+## Pop-up selfie camera motor (t13 research, archived for a future round)
+
+raphael's pop-up camera is driven by a TI DRV8846 dual H-bridge stepper
+(vendor drivers/misc/drv8846.c, cached work/ref/motor/):
+
+- TLMM GPIOs (all SOUTH tile, the 0093 driver already reaches them):
+  mode0=21, mode1=33, sleep=35, dir=9, pwren=130; step-mode = 2
+  (mode1=1/mode0=0) per raphael-sm8150.dtsi.
+- PWM: PM8150L LPG channel 1 (`&pm8150l_pwm`, pwms = <... 1 1000000>);
+  motion profile: ramp 625000 ns (1.6 kHz) 50 ms -> high 52083 ns
+  (~19.2 kHz, the LRA resonance) 720 ms -> ramp down. sleep=1 during
+  motion, dir pin picks up/down, hrtimer drives the state machine.
+- Missing piece: PM8150L LPG register map (pm8150l.dtsi + pwm-qcom-lpg
+  driver, PM8150L SID unknown - fetch before attempting).
+
+## Vibration motor (open lead)
+
+No vibrator node in raphael-sm8150.dtsi / overlay. Candidate driver:
+leds-qpnp-vibrator-ldo.c (present in the vendor kernel) - an LDO-driven
+eccentric motor on PM8150L. Needs pm8150l.dtsi + the LDO regulator mapping
+to confirm. The drv8846 node above is the CAMERA motor, not haptics.
+
+## Process lesson (0096 CI round)
+
+The local work/xnu tree drifted from the repo patch lineage (Edit-tool
+tab->space pollution in regions old patches never touched). Patch hunks
+generated against the drifted tree fail on CI with
+"patch failed: ...:55" and darwin-xnu-build SKIPS failed patches with only
+a warning - producing a green build missing the change (run 39593077146).
+Countermeasures now in place: regenerate board patches against the CI
+buildtree (canonical) base; xnu.yml fails the run if any NNNN-(raphael|
+sweet)-*.patch is skipped. Also: C++ default arguments live in the
+declaration only, but the out-of-line definition must still list ALL
+parameters (publish() lost its 10th param -> IOPMPowerSource::timeRemaining
+getter shadowed the name).

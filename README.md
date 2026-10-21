@@ -4,24 +4,24 @@
 
 > ⚠️ 【警告】本项目尚未经过全流程实测，仅供极客测试。操作会彻底清空手机数据，严禁在主力机上操作！
 
-**当前状态（2026-10-21, r20/t12）**
+**当前状态（2026-10-21, r21/t13）**
 
 - ✅ XNU 早期引导链路实机验证：shim → 内核加载 → VM/zone → 实机完整启动进锁屏
 - ✅ **8 核实机确认（t10/t11 日志）**：`8/8 CPUs initialized`；bootstrap 卡死（根因 kryo470 失配，0090 已修）与卡顿（单核副作用）双双关闭
-- ✅ **触摸总线已通（t11 日志）**：TLMM-south 修复后供电轨 vdd=3/avdd=3、SDA/SCL 拉高、IC 应答（probe err=0）
+- ✅ **触摸实机可用（t12 实测，用户确认）**：GT9886 厂商级 bring-up 全链闭环 —— 真寄存器图（pid@0x4535、配置窗口@0x6f78、帧@0x4100）+ 784 字节面板配置下发（双供应商配置嵌入，按 sensor-id 选择）+ doze 控制 + TX 流式写入（0x49 探针投毒已删）
 - ✅ 显示：raphael 原生 1080x2340 面板点亮（AppleCLCD，shim 直写 ABL splash 帧缓冲）
 - ✅ USB：内核枚举 `1209:0001 Sweet iOS`；看门狗已解除（日志定格不重启）
 - ✅ rootfs 管线：iOS 16.7.16 → 16G HFS+ 镜像（CI 全自动，见 Releases）
-- 🔧 **触摸真根因已定位（爬透 LineageOS raphael 内核 + vendor 固件 blob，0094 修复）**：① GT9886 "normandy" 寄存器图来自配置 blob（pid@0x4535、配置窗口@0x6f78、**触摸帧@0x4100**），t8 以来读的 0x8240/0x824E 只是碰巧 ACK 的地址；② 这颗 IC 每次开机**必须下发 784 字节面板配置**（双供应商配置已从 vendor blob 原样嵌入内核，按 IC sensor-id 选择），不下发就没有触摸帧；③ t11 探针成功后轮询全灭的元凶 = 0x49 ST FTS 探针 NACK 后 TX FIFO 残留字节投毒 → 已删除 + TX 改水位驱动流式写入（单条写 786B）
-- 🔧 **电池真根因已定位（0095 修复）**：SPMI 观察者命令漏了 `sid<<20` 位域（Linux pmic_arb_fmt_cmd_v2 对照）—— SWEET（PM6150=SID0）无害，raphael PM8150B（**SID 2**）每次都读错 PMIC → 静默 static fallback；已修复 + 启动探针逐字段记录
-- 🚧 **t12（r20）已发布待实测**：一次刷机双验证（触摸配置下发链 + 电池真实读数）；判读树见 docs/FLASH-T12.md
+- 🔧 **电池真根因已定位（爬透 qpnp-fg-gen4.c + fg-util.c + smb5-reg.h，0096 修复）**：PM8150B 上根本没有 "QG"，它是 **fg-gen4 双外设集合**（fg-batt-soc@0x4000 + fg-batt-info@0x4100）——t12 读到的 `st2=0xce` 其实就是 monotonic SOC 206/255 ≈ 80% 电量，数值一直都在；0096 全面改用 vendor 同款寄存器图与换算：SOC（0-255 影子校验 + 原厂百分比公式）、电压（raw×122.07µV）、电流（符号扩展×488.281µA）、电池在位（SYS_BATT）、SMB5 充电状态机（USBIN_PLUGIN + CHGR_STATUS1），另带时间剩余估算、真低电警告/临界（仅实测有效时）、SPMI 白名单补 0x41
+- 🛡️ CI 防呆加固：板级补丁被 dxb 静默跳过时直接报错（本轮 0096 曾因本地缩进漂移产出过"绿灯假内核"，已根除这一类事故）
+- 🚧 **t13（r21）已发布待实测**：锁屏电量不再恒 100%、插线出现充电闪电即全胜；判读树见 docs/FLASH-T13.md
 
 ## 下载（Releases）
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-t12-gt9886-clean.img` | **当前首刷推荐（r20）**：**0094 GT9886 厂商级 bring-up**（真寄存器图 + 784 字节配置下发 + doze 控制 + TX 流式写入）+ **0095 电池 sid 根因修复**（SPMI 命令补 sid 位域 + 逐字段探针）+ 8 核；判读树 docs/FLASH-T12.md |
-| `raphael-t12-gt9886-debug.img` | r20 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
+| `raphael-t13-fggen4-clean.img` | **当前首刷推荐（r21）**：**0096 fg-gen4 硬件电量计重写**（真 SOC/电压/电流 + SMB5 充电语义 + 时间剩余 + 低电警告）+ 0094 触摸（实测可用）+ 0090 八核；判读树 docs/FLASH-T13.md |
+| `raphael-t13-fggen4-debug.img` | r21 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
 | `raphael-t7-touchfix-clean.img` | 回退/对照：t7（SWEET 编译，8 核可启动，触摸死） |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷） |
 
@@ -30,9 +30,10 @@
 ```
 t7-clean: 91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe （回退用，已知可启动）
 t10-clean: e8cd3bc126670fdb2cb3bcd5cf4ee1a3f3b572a1ab53d49234dde0c378a2f857 （诊断版，已完成使命）
-t11-clean: bd75bc2d0a0db479f4295bfe80ecab85276a80b3258ac27ff746723fe902cf12 （总线已通，已被 t12 取代）
-t12-clean: 3725736f0773ede73b59a35d1cabddc92decbc58aaa37f8a375fa09d46459c6b
-t12-debug: 8dc5b5a98155949f552f8b8caa35bf772311560dff81bc63c47a7f89f639ba8b
+t11-clean: bd75bc2d0a0db479f4295bfe80ecab85276a80b3258ac27ff746723fe902cf12 （总线已通，已被取代）
+t12-clean: 3725736f0773ede73b59a35d1cabddc92decbc58aaa37f8a375fa09d46459c6b （触摸闭环，已被 t13 取代）
+t13-clean: 3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f
+t13-debug: 8a5fe04f6dad86836cb589a2ba0e3c4d75b90aad2550ee69c8cca1ce63a63085
 ```
 
 ## 📱 K20 Pro 刷入 iOS 极简指南
@@ -43,8 +44,8 @@ t12-debug: 8dc5b5a98155949f552f8b8caa35bf772311560dff81bc63c47a7f89f639ba8b
 - 环境：电脑或另一台手机（Termux + `android-tools`，OTG 线连接目标机）已装 adb / fastboot。
 - 文件：
   - `ios16-root.simg.part-00 ~ 05` 及 `CHECKSUMS.txt`
-  - `raphael-t12-gt9886-debug.img`（排障版，首刷；屏幕控制台常开）
-  - `raphael-t12-gt9886-clean.img`（正式版）
+  - `raphael-t13-fggen4-debug.img`（排障版，首刷；屏幕控制台常开）
+  - `raphael-t13-fggen4-clean.img`（正式版）
   - `raphael-t7-touchfix-clean.img`（回退用，已知可启动）
   - K20 Pro 的 `recovery.img`（OrangeFox，用于备份与取证）
 
@@ -89,20 +90,20 @@ fastboot -S 512M flash userdata ios16-root.simg
 1. **首刷排障版**（屏幕控制台常开）：
 
 ```bash
-fastboot boot raphael-t12-gt9886-debug.img
+fastboot boot raphael-t13-fggen4-debug.img
 ```
 
 - 屏幕滚动内核日志 → 出现 `SWEET UFS:` 行 → 屏幕被文字"画花" = iOS 用户态接管（正常现象，正式版才有干净画面）。
-- 若卡住：**拍下最后几行**发回 —— 那就是精确卡点（判读树见 Release 内 `FLASH-T11.md`）。
+- 若卡住：**拍下最后几行**发回 —— 那就是精确卡点（判读树见 Release 内 `FLASH-T13.md`）。
 
 2. **正式启动**（确认上一步成功后）：
 
 ```bash
-fastboot boot raphael-t12-gt9886-clean.img
+fastboot boot raphael-t13-fggen4-clean.img
 ```
 
 - 此版本无文字叠加：黑屏/定格画面数分钟（无进度反馈）→ 锁屏出现（8 核，应与 t10 同样流畅）。
-- 重点观察：①**上手滑触摸**（`cfg send … err=0` 即配置入 IC，触摸应直接工作；方向不对回报 `sensor id=`/`flip=` 值）；②**锁屏电池**（不再恒定 100% 即活）；③拉日志看 `GT9886 pid`/`cfg send`/`SWEET BATTERY: probe` 判读行。
+- 重点观察：①**锁屏电池**（不再恒定 100%、百分比随实际变化即活；插线应出现充电闪电）；②触摸回归确认（t12 已实测可用，不应变化）；③拉日志看 `SWEET BATTERY: probe type=0/0xd … msoc=0/0xXX,0xXX(NN%)` 判读行（两值相等 = 影子校验过，NN% 即真电量）。
 - 超过 15 分钟无变化 → 转下方「救砖与取证」。
 
 ## 🚑 救砖与取证
@@ -126,11 +127,11 @@ adb pull /tmp/log.bin
 - `.github/workflows/build-rootfs.yml` — 一键产出 iOS rootfs 并发 Release（macOS runner）
 - `tools/build-raphael.sh` — 全链路打包：DTB 提取 → ADT → mkpayload → shim → boot.img v2
 - `tools/repack-boot-v2.py` — 对实测 boot 镜像原位补丁 cmdline（sanity 模式逐字节复验），布局逆向文档见 `tools/README-repack.md`
-- 补丁链 0001-0095：早期控制台 / 持久日志环 / USB bring-up / raphael 显示适配 / 0090 匹配表（kryo485）/ 0091 触摸总线诊断 / 0092 电池（PM8150B QG）/ 0093 触摸 TLMM-south / 0094 GT9886 配置下发（触摸真根因）/ 0095 电池 SPMI sid 等
+- 补丁链 0001-0096：早期控制台 / 持久日志环 / USB bring-up / raphael 显示适配 / 0090 匹配表（kryo485）/ 0091 触摸总线诊断 / 0092 电池 / 0093 触摸 TLMM-south / 0094 GT9886 配置下发（触摸真根因）/ 0095 电池 SPMI sid / 0096 fg-gen4 硬件电量计重写（电池真根因）等
 
 ## 致谢
 
 - [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) — 上游项目与纯 Linux rootfs 管线
 - XNU 内核与 iOS userspace 版权归 Apple Inc. 所有，本项目仅用于研究学习
 
-> r20/t12 判读树与取证命令见 Release `raphael-touch-r20` 内 `FLASH-T12.md`（历史判读树 FLASH-T6~T11 保留在 docs/）。
+> r21/t13 判读树与取证命令见 Release `raphael-touch-r21` 内 `FLASH-T13.md`（历史判读树 FLASH-T6~T12 保留在 docs/）。

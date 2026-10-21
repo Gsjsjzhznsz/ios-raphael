@@ -319,3 +319,24 @@ Stage Summary:
 - 本轮双根因均来自对 vendor 实现的忠实对照（不再猜测）：触摸 = 寄存器图错 + 缺配置下发 + 0x49 投毒三重叠加；电池 = SPMI 命令缺 sid 位域
 - t12 判决：`GT9886 pid err=0 [39 38 38 36]` → 身份确认；`cfg send … err=0` → 配置入 IC 上手滑；`SWEET BATTERY: probe type=0/0xd` → 电池读通；方向不对回报 sensor id/flip 值
 - 兜底：pid 非 9886 → 固件下发路径（gtx8_update.c 已在 work/ref 备好）；cfg send 卡 0x82 → 回报握手行；电池 probe 有 -1 → APID/observer 层问题（dump APID 表）
+
+---
+Task ID: 16
+Agent: Super Z (main agent)
+Task: t12 实测解读（触摸闭环 + 电池仍 fallback）→ fg-gen4 真根因 → 0096 电池重写 → t13 发布（含 CI 假内核事故修复）
+
+Work Log:
+- t12 日志解码：触摸判决行全绿（pid [39 38 38 36]=ASCII "9886"、sensor id=0x1、cfg send sensor1 784B err=0 → 用户确认触摸正常）；电池探针 `type=0/0xd sub=0/0x10 st1=0/0 st2=0/0xce v=0/0 i=0/0 usb=0/0x26 path=0/0x2 chg=0/0x47`（格式 err/值）→ sid 修复生效、读路径通，但 V/I 全零仍 fallback
+- 真根因研究（fetch LineageOS sm8150 fg 全家桶到 work/ref/fg/：qpnp-fg-gen4.c 213KB + fg-util.c + fg-reg.h + smb5-reg.h + smb5-lib.h）：PM8150B 无 QG（那是 sm8250+），是 fg-gen4 双外设：fg-batt-soc@0x4000（monotonic SOC +0x09/+0x0A 影子、0-255、vendor 百分比公式）+ fg-batt-info@0x4100（SYS_BATT +0x07、VBATT +0xA0/+0xA6、IBATT +0xA2/+0xA8；换算 uV=raw×122070/1000、uA=sign16×488281/1000）；t12 的 `st2=0xce` 就是 SOC 206/255≈80%，数值一直都在被误读；0x4008=SLEEP_SHUTDOWN_STS 恒 0 → t12 "无电池"判定直接 fallback
+- 0096 编写：SweetBattery raphael 段全面重写（影子校验读 fgReadShadowByte/Word、fgMonotonicPercent、SMB5 语义 external=USBIN_PLUGIN bit4、charging=状态机 1-4、full=TERMINATE、时间剩余估算、真低电警告/临界仅实测有效、百分比变化日志、publish 增加 timeRemaining 参数）+ sweet_spmi.c 白名单补 0x41
+- CI 事故一（假内核）：v1 补丁在本地树（历史 Edit 工具 tab→空格污染）上生成，CI 规范树 tab 缩进 → `patch failed: SweetBattery.cpp:55` 被 dxb 静默跳过 → run 39593077146 绿灯但内核无 0096（靠 t13_package 的标记校验抓到）；修复：下载该 run 的 xnu-buildtree 作为规范基，脚本化重建（scripts/rebuild_0096.py，to_tabs 转换 + token 级等价校验 + 往返验证）
+- CI 事故二（我方 YAML）：防呆闸步骤名含冒号破坏 YAML → run 39594849054 无 job 即败 + dispatch 422；修复：引号包名 + 防呆闸限定 NNNN-(raphael|sweet)- 模式（blacktop 上游补丁 TrustCache/skywalk_sonoma 等每次都良性跳过）
+- CI 事故三（真编译错）：publish 声明带默认参数 `int timeRemaining = -1` 但定义漏列第 10 参数 → 函数体 timeRemaining 解析为基类 getter（IOPMPowerSource::timeRemaining）两个报错；修复：定义补全参数（v3）
+- v3 构建（run 39596471069 SUCCESS，内核 c094d9ed…）14 项标记逐项验证全过；t13 打包六重校验全过（clean 3d31006c… / debug 8a5fe04f…）
+- 发布 raphael-touch-r21（419516832，4 资产）+ 删 r20 → 发行版 = rootfs + t7 + t13；download/ 刷新为 t13 件；README 状态区/下载表/刷机指南/补丁链更新；NOTES.md 存档 fg-gen4 全套研究 + DRV8846 升降摄像头马达（TLMM 21/33/35/9/130 + PM8150L LPG ch1，ramp 1.6kHz/谐振 19.2kHz，差 pm8150l.dtsi 考证）+ 振动马达线索（leds-qpnp-vibrator-ldo，PM8150L）+ 流程教训
+
+Stage Summary:
+- 电池根因三连击闭环：0092 假数据 → 0095 sid → 0096 fg-gen4 真寄存器图（vendor 逐字节对齐）
+- t13 判决：`probe type=0/0xd sys=0/0x0 msoc=0/0xXX,0xXX(NN%)`（两值相等=影子过）+ 锁屏不再恒 100% + 插线闪电 → 全胜；百分比冻结但电压动 → 下轮 fg-memif 电池 profile
+- 工程加固：补丁必须对 CI buildtree 规范基生成；CI 对板级补丁跳过即红
+- 彩蛋已备料：升降摄像头马达全协议在案（NOTES.md）
