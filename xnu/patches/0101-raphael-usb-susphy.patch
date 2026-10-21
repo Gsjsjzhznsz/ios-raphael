@@ -1,0 +1,54 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 0d74963..ec4b806 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -168,6 +168,8 @@ sweet_usb_probe(void)
+  * ep0.c).
+  */
+ #define GCTL            0xc110
++#define GUSB2PHYCFG     0xc200
++#define GUSB2PHYCFG_SUSPHY (1u << 6)
+ #define GEVNTADRLO      0xc400
+ #define GEVNTADRHI      0xc404
+ #define GEVNTSIZ        0xc408
+@@ -887,6 +889,26 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	ud.dma_pa = ptoa_64(pn);
+ 	ud_if_create();
+ 
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++	/* Linux dwc3_hs_phy_setup(): "Ensure the GUSB2PHYCFG.SUSPHY is cleared
++	 * prior to phy init." ABL leaves the fastboot PHY suspended (raphael
++	 * probe: GUSB2PHYCFG 0x00100240, bit 6 = SUSPHY), and on DWC_usb31 the
++	 * endpoint register block is clock-gated while the PHY is suspended:
++	 * the first DEPCMD access never completes and wedges the config-NoC
++	 * (t14/t15 froze inside ud_epcmd right after the ep0 print, no timeout
++	 * line, whole system down). Clear SUSPHY before the device soft reset;
++	 * we poll instead of using interrupts, so unlike Linux (which re-enables
++	 * auto-suspend via dwc3_enable_susphy() once the gadget is up) we leave
++	 * it cleared. */
++	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
++	if (phycfg & GUSB2PHYCFG_SUSPHY) {
++		dwc_wr(GUSB2PHYCFG, phycfg & ~GUSB2PHYCFG_SUSPHY);
++		delay(10000);	/* 10 ms: PHY resumes from suspend */
++	}
++	printf("SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x (SUSPHY cleared)\n",
++	    phycfg, dwc_rd(GUSB2PHYCFG));
++#endif
++
+ 	/* Qualcomm wrapper first (Linux dwc3-qcom forces the VBUS session at
+ 	 * probe time): the QSCRATCH registers live outside the DWC3 core and
+ 	 * survive the device soft reset below. */
+@@ -935,6 +957,13 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	/* Events: disconnect, USB reset, connect done */
+ 	dwc_wr(DEVTEN, 0x7);
+ 
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++	/* Canary: a pure DEPCMD read, no command issued (safe - Linux polls the
++	 * same register in dwc3_send_gadget_ep_cmd). If the screen freezes HERE
++	 * the endpoint register block is still clock-gated (PHY); if it freezes
++	 * one line later the DEPSTARTCFG command semantics are at fault. */
++	printf("SWEET USB: DEPCMD(0) canary 0x%08x\n", dwc_rd(DEPCMD(0)));
++#endif
+ 	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
+ 	printf("SWEET USB: ep0 DEPSTARTCFG/SETEPCONFIG/SETTRANSFRESOURCE\n");
+ 	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
