@@ -1,0 +1,117 @@
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 4da50d8..45c5f50 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -1,6 +1,10 @@
+ /*
+  * SWEET PM6150L L11C bring-up; see report.md for DT and source evidence.
+  * Sole XNU apps-DRV owner, called from thread context with deep idle disabled.
++ * RAPHAEL (0103): also votes the sm8150 USB HS PHY rails (ldoa2/ldoa5/
++ * ldoa12) for sweet_usb.c before the femto sequence - raphael apps_rsc
++ * geometry is identical (drv-id 2, ACTIVE 2/SLEEP 3/WAKE 3, same RSC/
++ * TCS/cmd-db-locator addresses), so the TCS discipline is reused as-is.
+  * No sleep/wake programming, SPMI writes, GIC handler, or timeout recovery.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+@@ -234,7 +238,7 @@ rh_send(uint32_t address, unsigned mv)
+ 		for (unsigned c = 0; c < rh_ncpt; ++c) {
+ 			if ((enabled & (1u << c)) &&
+ 			    (rh_read(rh_tcs, b + RH_ADDR + c * RH_CMD_STRIDE) & ~15u) == address) {
+-				printf("SWEET RPMH: conflicting inherited L11C request in TCS%u\n", t);
++				printf("SWEET RPMH: conflicting inherited request in TCS%u\n", t);
+ 				return EBUSY;
+ 			}
+ 		}
+@@ -320,18 +324,47 @@ rh_send(uint32_t address, unsigned mv)
+ 		return EIO;
+ 	}
+ 	rh_poisoned = false;
+-	printf("SWEET RPMH: L11C ACTIVE vote complete (rail voltage requires hardware verification)\n");
++	printf("SWEET RPMH: ACTIVE vote complete (rail voltage requires hardware verification)\n");
+ 	return 0;
+ }
+ 
+ int
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
+-	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
++	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary
++	 * resources. RAPHAEL: exactly the three sm8150 USB HS PHY rails as
++	 * mainline raphael wires them (all HPM): vdda33 = ldoa2 3072 mV,
++	 * vdda-pll = ldoa5 880 mV, vdda18 = ldoa12 1800 mV. SWEET: PM6150L
++	 * L11C (ldoc11) 2950..3400 mV. */
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++	static const struct rh_rail {
++		const char *name;
++		unsigned lo, hi;
++	} rh_rails[] = {
++		{ "ldoa2", 3000, 3120 },
++		{ "ldoa5", 800, 900 },
++		{ "ldoa12", 1700, 1900 },
++	};
++	const struct rh_rail *rail = NULL;
++	if (res) {
++		for (unsigned i = 0; i < sizeof(rh_rails) / sizeof(rh_rails[0]); ++i) {
++			if (!strcmp(res, rh_rails[i].name)) {
++				rail = &rh_rails[i];
++				break;
++			}
++		}
++	}
++	if (!rail || mv < rail->lo || mv > rail->hi) {
++		printf("SWEET RPMH: %s@%u mV is not a supported raphael USB LDO request\n",
++		    res ? res : "(null)", mv);
++		return EINVAL;
++	}
++#else
+ 	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
+ 		printf("SWEET RPMH: expected ldoc11 and 2950..3400 mV\n");
+ 		return EINVAL;
+ 	}
++#endif
+ 	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
+ 		return EBUSY;
+ 	}
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 1a9870b..e561cb8 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -40,6 +40,7 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void sweet_usb_probe(void);
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
++extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ 
+ #define GCC_PA                  0x00100000
+@@ -938,6 +939,30 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	if (hsphy != 0 && gccb != 0) {
+ 		printf("SWEET USB: hsphy pre-state COMMON0 0x%08x CTRL2 0x%08x CTRL5 0x%08x CFG0 0x%08x\n",
+ 		    usb_rd(hsphy, 0x54), usb_rd(hsphy, 0x64), usb_rd(hsphy, 0x50), usb_rd(hsphy, 0x94));
++		/* 0103: Linux qcom_snps_hsphy_init() enables vdda-pll/vdda33/vdda18
++		 * FIRST (regulator_bulk_enable is its very first step) - the femto
++		 * register file needs its analog rails up before any write sticks.
++		 * t17 proof the rails are down at handoff: every readback returned
++		 * repeating-byte garbage (COMMON1 0x3b3b3b3b, REFCLK 0x02020202,
++		 * CTRL2 0x06666606) and no femto write stuck, so the ep0 command
++		 * still found no UTMI clock (boot A wedged a CPU at ep0; the 45 s
++		 * touch start escalated it into the warm reboot; boot B died even
++		 * earlier, inside the pre-state printf). Vote the three rails
++		 * through RPMh exactly as mainline raphael wires them (all HPM):
++		 * vdda33 = ldoa2 @ 3072 mV, vdda-pll = ldoa5 @ 880 mV, vdda18 =
++		 * ldoa12 @ 1800 mV. A failed vote aborts here: reading a dead PHY
++		 * returns garbage but survives, while the ep0 command WRITE wedges
++		 * the boot CPU and turns every failure into the 45 s reboot loop. */
++		int ldoerr = sweet_rpmh_vreg_enable("ldoa2", 3072);
++		ldoerr |= sweet_rpmh_vreg_enable("ldoa5", 880);
++		ldoerr |= sweet_rpmh_vreg_enable("ldoa12", 1800);
++		printf("SWEET USB: hsphy post-LDO COMMON0 0x%08x CTRL2 0x%08x CTRL5 0x%08x CFG0 0x%08x (ldo err %d)\n",
++		    usb_rd(hsphy, 0x54), usb_rd(hsphy, 0x64), usb_rd(hsphy, 0x50), usb_rd(hsphy, 0x94),
++		    ldoerr);
++		if (ldoerr) {
++			printf("SWEET USB: hsphy LDO vote failed; gadget start aborted before PHY reset (no ep0 wedge)\n");
++			return;
++		}
+ 		/* GCC_QUSB2PHY_PRIM_BCR 0x12000 (gcc-sm8150.c): assert >= 100 us,
+ 		 * then release - resets all PHY registers to default state. */
+ 		*(volatile uint32_t *)(gccb + 0x12000) = 1;
