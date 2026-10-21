@@ -1,0 +1,132 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 21ab6cd..c25644b 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -18,6 +18,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void sweet_hid_key(int key, int down);
++extern void sweet_spmi_cmdgate(int on);
+ void sweet_keys_init(void);
+ 
+ #define KEYS_CORE_PA     0x0c440000u
+@@ -85,19 +86,27 @@ keys_read(uint16_t apid, uint16_t addr, uint8_t *out)
+ 	uint32_t off = 0x80u * apid; /* obs + EE(0)*0x10000 */
+ 	uint32_t cmd = (1u << 27) | ((uint32_t)(addr & 0xffu) << 4);
+ 	__asm__ volatile("dmb oshst" ::: "memory");
++	/* One command gate for every observer user (keys thread, census,
++	 * battery): Linux serializes all pmic-arb commands with a single
++	 * spinlock; concurrent commands on different channels are not
++	 * proven safe on the v5 arbiter (t14 boot 2 wedged mid-census). */
++	sweet_spmi_cmdgate(1);
+ 	*(volatile uint32_t *)(keys_obs + off) = cmd; /* EXT_READL, one byte */
+ 	__asm__ volatile("dsb osh" ::: "memory");
+ 	for (unsigned i = 0; i < 1000; ++i) {
+ 		keys_last_status = keys_rd(keys_obs, off + 0x08u);
+ 		if (keys_last_status & 1u) {
+ 			if (keys_last_status & 0x0eu) {
++				sweet_spmi_cmdgate(0);
+ 				return false;
+ 			}
+ 			*out = (uint8_t)keys_rd(keys_obs, off + 0x18u);
++			sweet_spmi_cmdgate(0);
+ 			return true;
+ 		}
+ 		delay(1);
+ 	}
++	sweet_spmi_cmdgate(0);
+ 	return false;
+ }
+ 
+@@ -207,7 +216,18 @@ sweet_keys_init(void)
+ 	/* K20 Pro: power = PM8150 PON KPDPWR, volume-down = PON RESIN,
+ 	 * volume-up = PM8150 GPIO6 (mainline dts: pm8150_gpios 6, active-low). */
+ 	keys_gpio_apid = keys_find_apid(KEYS_GPIO_PPID, count);
+-	keys_gpio_census(count);
++	/* The census settled the key map in earlier rounds; it is opt-in now
++	 * (sweetcensus=1) because a PMIC wedged by a crash makes every read
++	 * time out and the sweep looks like a hang on warm reboots. */
++	{
++		int census = 0;
++		(void)PE_parse_boot_argn("sweetcensus", &census, sizeof(census));
++		if (census) {
++			keys_gpio_census(count);
++		} else {
++			printf("SWEET KEYS: census skipped (sweetcensus=1 to run)\n");
++		}
++	}
+ #else
+ 	keys_gpio_apid = keys_find_apid(KEYS_GPIO_PPID, count);
+ #endif
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index 1f6f99e..047a453 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -39,6 +39,10 @@ static const uint16_t sp_periph_ok[] = { 0x10, 0x11, 0x12, 0x13, 0x48 };
+ 
+ static vm_offset_t sp_core, sp_obs, sp_cfg;
+ static IOLock *sp_lock;
++/* One gate for every observer command on this arbiter, shared with the
++ * keys driver (sweet_keys.c). Linux takes a single spinlock around every
++ * pmic-arb command; our two independent users raced each other in t14. */
++static IOLock *sp_gate;
+ static unsigned sp_count;
+ static bool sp_attempted, sp_ready;
+ /* A timed-out command may complete late: never reuse that lane this boot. */
+@@ -77,6 +81,7 @@ sweet_spmi_init(void)
+ 	}
+ 	sp_attempted = true;
+ 	sp_lock = IOLockAlloc();
++	sp_gate = IOLockAlloc();
+ 	if (!sp_lock) {
+ 		return -1;
+ 	}
+@@ -101,6 +106,22 @@ sweet_spmi_init(void)
+ 	return 0;
+ }
+ 
++/* Serialize an observer command across ALL arbiter users. Callers that
++ * have not initialized this module yet run unguarded (single-threaded boot
++ * order makes that impossible in practice). */
++void
++sweet_spmi_cmdgate(int on)
++{
++	if (sp_gate == NULL) {
++		return;
++	}
++	if (on) {
++		IOLockLock(sp_gate);
++	} else {
++		IOLockUnlock(sp_gate);
++	}
++}
++
+ int
+ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ {
+@@ -135,21 +156,25 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ 	uint32_t cmd = (1u << 27) | ((uint32_t)(sid & 0xfu) << 20) |
+ 	    ((addr & 0xffu) << 4);
+ 	__asm__ volatile("dmb oshst" ::: "memory");
++	sweet_spmi_cmdgate(1);
+ 	*(volatile uint32_t *)(sp_obs + off) = cmd; /* EXT_READL, BC=0 */
+ 	__asm__ volatile("dsb osh" ::: "memory");
+ 	for (unsigned i = 0; i < 1000; ++i) {
+ 		uint32_t status = sp_rd(sp_obs, off + 0x08u);
+ 		if (status & 1u) {
+ 			if (status & 0x0eu) {
++				sweet_spmi_cmdgate(0);
+ 				IOLockUnlock(sp_lock);
+ 				return -1;
+ 			}
+ 			*out = (uint8_t)sp_rd(sp_obs, off + 0x18u);
++			sweet_spmi_cmdgate(0);
+ 			IOLockUnlock(sp_lock);
+ 			return 0;
+ 		}
+ 		delay(1);
+ 	}
++	sweet_spmi_cmdgate(0);
+ 	sp_poisoned[apid] = true;
+ 	printf("SWEET BATTERY: SPMI timeout sid=%u addr=%#x APID=%u disabled\n",
+ 	    sid, addr, apid);
