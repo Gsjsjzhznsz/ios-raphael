@@ -14,7 +14,7 @@
 |---|---|---|
 | 引导链 | ✅ 实测可用 | shim → XNU → iOS 锁屏完整启动（`fastboot boot` 免落盘，重启即回安卓引导） |
 | CPU | ✅ 8 核实测 | `8/8 CPUs initialized`（kryo485 匹配表 + PSCI 二次核拉起） |
-| 显示 | ✅ 点亮（稳定版 t12 为居中裁剪模式） | 原生 1080×2340 面板；整幅缩放修复系 t14 实验功能（已随回退移除），稳定版下 iOS 的 1125×2436 画面居中裁剪，顶部两角的时间/电量会被切掉 |
+| 显示 | ✅ 点亮（稳定版 t12 为居中裁剪；t20 测试轮已上整幅缩放） | 原生 1080×2340 面板；整幅缩放修复已作为 **t20/r30 测试轮** 发布（sweetscale 最近邻映射表，历史 0098 的仅缩放子集，1125×2436 整幅缩到 1080×2340，顶部时间/电量不再被切）；稳定版 t12 下 iOS 的 1125×2436 画面仍居中裁剪 |
 | 触摸 | ✅ 实测可用 | GT9886 厂商级 bring-up：真寄存器图 + 784 字节面板配置下发（双供应商）+ doze 控制 |
 | 电池 | 🔶 探针读通（稳定版 t12） | PM8150B 读通（probe type=0xd）；fg-gen4 真实读数（SOC/电压/电流）与充电轮询系 t13 实验功能（稳定版不含；**t13 重建版已发布为当前测试轮 r29**，见下载区），稳定版仍为静态读数 |
 | 亮度 / 息屏 | ❌ 稳定版未含 | DSI DCS 亮度通道与息屏立即全黑系 t14 实验功能（已随回退移除），稳定版为多步渐暗 |
@@ -36,8 +36,10 @@
 |---|---|
 | `raphael-t12-gt9886-clean.img` | **当前首刷推荐（r28 稳定版）**：8 核（cmdline cpus=8 + ADT 8×kryo485）· GT9886 触摸闭环（784B 面板配置下发，实测可用）· 电池探针 · v2 头正确打包 · 逐字节复用实测可用的原 r20 资产（零改动） |
 | `raphael-t12-gt9886-debug.img` | r28 排障版：同 clean 但**屏幕控制台常开**（仅改 1 字节 sweetfb_noconsole=0） |
-| `raphael-t13-fggen4-clean.img` | **当前测试轮（r29）**：t13 fg-gen4 硬件电量计重建版——稳定版底座上真电池读数（monotonic SOC / 实测电压电流 + SMB5 充电语义 + 30s 轮询）；内核由回退树 CI 重建（标记集验证），v2 头工具链字节级验证 |
+| `raphael-t13-fggen4-clean.img` | **上一测试轮（r29）**：t13 fg-gen4 硬件电量计重建版——稳定版底座上真电池读数（monotonic SOC / 实测电压电流 + SMB5 充电语义 + 30s 轮询）；内核由回退树 CI 重建（标记集验证），v2 头工具链字节级验证 |
 | `raphael-t13-fggen4-debug.img` | r29 排障版：同 clean 但**屏幕控制台常开**（仅改 1 字节 sweetfb_noconsole 1→0） |
+| `raphael-t20-sweetscale-clean.img` | **当前测试轮（r30）**：整幅显示缩放——1125×2436 最近邻缩到 1080×2340（逐列/逐行映射表，中心对齐），顶部时间/电量两角不再被居中裁剪切掉；历史 0098 的仅缩放子集（亮度/息屏/日志搭车件全部排除）；首次真机视觉测试（t14 时代该功能从未被肉眼验证） |
+| `raphael-t20-sweetscale-debug.img` | r30 排障版：同 clean 但**屏幕控制台常开**（仅改 1 字节 sweetfb_noconsole 1→0） |
 | ~~`raphael-t19-ahb2phy-bcr-clean.img`~~ | ⚠️ **勿刷（r27）**：v1 头打包错误（本机 ABL 只接受 v2 头），实测黑屏；USB 供电轮 t14~t19 已全线废弃回退 |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷，**rootfs 无需重刷**，与 t 系列内核通用） |
 
@@ -51,6 +53,8 @@ t12-debug: 73f1d0ff7656b2e9ce5b52c7d2f274c33fb811a15142910442a410c4da45f46e
 t13-orig-clean: 3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f （原版 r21，资产已失传，仅供历史对照）
 t13-clean: 82c71576bb58b9279e71ddcc03335a1e66a858679abb4d3abac9d65fe88044e4 （r29 重建版，v2 头正确打包，当前测试轮）
 t13-debug: 4f1f5f65cd96463030729ffdba8787ad8c880dd4aff5a4641bd8fa0c1430770d （同上）
+t20-clean: e32618b9b94803ca2df80612dec599a9abb3ab6cb7bd058a5ca91b456bee5df8 （r30 整幅缩放，v2 头正确打包，当前测试轮）
+t20-debug: 6c272111370ee41ecf1efe769e74587b41fb7ab44aca9571f5a86acb79523c19 （同上）
 t14-clean: 3374ac69efb17155de6a61792e5753053c25669317bb5464aa5fa284e8da3a3c （USB 挂死，勿刷）
 t18-clean: a16e17250b16f6b253085175922e196ec626f898d2165b7b811a996f69fa29ee
 t18-debug: 6f165dca80db7e34021f3f3b6cb020f5127ee108475cb5a5efe76f2c241dcd91
@@ -174,7 +178,7 @@ adb pull /tmp/sweet-log.bin
 
 - ✅ Boot chain proven on device: shim → XNU → iOS lock screen (`fastboot boot`, nothing permanent)
 - ✅ All 8 cores (`8/8 CPUs initialized`)
-- ✅ Display lit (stable t12 uses center-crop: the 1125×2436 frame is cropped, cutting the top clock/battery corners; the t14 scaling fix was reverted with the USB rounds)
+- ✅ Display lit (stable t12 center-crops: the 1125×2436 frame is cropped, cutting the top clock/battery corners; the whole-frame scaling fix is now published as the t20/r30 test round — sweetscale nearest-neighbour maps, see Downloads)
 - ✅ Touch (GT9886 vendor-grade bring-up, confirmed working)
 - 🔶 Battery probe reads the PM8150B (type=0xd); the fg-gen4 real gauge (SOC/voltage/current) and charger polling are t13 features — kept out of the stable image, but the t13 rebuild is now published as the current test round (r29); the stable image still reports static values
 - ❌ Not in the stable image: brightness DCS channel and instant screen-off were t14 experimental features (reverted); the stable image keeps the old multi-step fade
@@ -188,8 +192,10 @@ adb pull /tmp/sweet-log.bin
 |---|---|
 | `raphael-t12-gt9886-clean.img` | **Recommended (r28 stable)**: 8-core (cpus=8 + 8×kryo485 ADT nodes) · GT9886 touch closed-loop (784-byte panel config, verified on device) · battery probe · byte-identical reuse of the verified r20 asset (zero modification) |
 | `raphael-t12-gt9886-debug.img` | Same, with the on-screen console always on (1-byte cmdline patch) |
-| `raphael-t13-fggen4-clean.img` | **Current test round (r29)**: the t13 fg-gen4 hardware fuel gauge, rebuilt — real battery readings on top of the stable base (monotonic SOC / measured V-I + SMB5 charger semantics + 30 s polling); kernel rebuilt by CI on the rolled-back tree (marker-verified), packaged on the byte-proven v2 chain |
+| `raphael-t13-fggen4-clean.img` | **Previous test round (r29)**: the t13 fg-gen4 hardware fuel gauge, rebuilt — real battery readings on top of the stable base (monotonic SOC / measured V-I + SMB5 charger semantics + 30 s polling); kernel rebuilt by CI on the rolled-back tree (marker-verified), packaged on the byte-proven v2 chain |
 | `raphael-t13-fggen4-debug.img` | r29 troubleshooting build: same clean, on-screen console always on (1-byte patch) |
+| `raphael-t20-sweetscale-clean.img` | **Current test round (r30)**: whole-frame display scaling — 1125×2436 nearest-neighbour-scaled to 1080×2340 (per-column/per-row maps, centres aligned), so the top clock/battery corners are no longer cropped; the scale-only subset of the historical 0098 (brightness/instant-off/logging all excluded); the first on-device visual test of this feature |
+| `raphael-t20-sweetscale-debug.img` | r30 troubleshooting build: same clean, on-screen console always on (1-byte patch) |
 | ~~`raphael-t19-ahb2phy-bcr-clean.img`~~ | ⚠️ **Do NOT flash (r27)**: v1-header packaging bug (this ABL only accepts v2 headers) — black screen; the t14–t19 USB line is fully reverted |
 | `ios16-root.simg.part-00~05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs (16G HFS+ sparse image; no need to re-flash when kernels update) |
 

@@ -409,3 +409,21 @@ Stage Summary:
 - t13 以 r29 重回测试轮：功能与失传的原版完全同一补丁集（0001-0096），打包首次用字节级验证的 v2 链
 - 凭据新常态：GH_TOKEN 常驻 .env + git config（.env 已进 .gitignore），后续会话免再索要
 - 教训：CI artifact 内可能混有链接中间产物（.link/*.a 134MB > 真 Mach-O 17MB），选核必须走 manifest + 魔数双验证，"取最大"不可靠
+
+---
+Task ID: 31
+Agent: Z.ai (main)
+Task: 用户指令"好了把屏幕缩放搞一下" —— 重建 t14 时代被回退的整幅缩放（sweetscale），仅缩放子集，发布为 t20/r30
+
+Work Log:
+- 考古（a7a925e^ 树）：恢复 0097-raphael-battery-charging（不取）与 0098-raphael-display-scale-brightness（四合一：缩放/亮度 DCS/即时息屏/externalMethod 调参日志）+ FLASH-T14.md；实锤"历轮 USB 楔死都发生在 t14 功能用户态可见之前"——**缩放从未被肉眼验证，t20 是首次真机视觉测试**；t12 cmdline 无 sweetscale → 补丁默认 scale=1 即缩放开。
+- 拆分（scripts/t20_make_patch.py）：规范基 = work/xnu 文件反向应用 0098（零 fuzz）→ 0001-0096 基线；KEEP 缩放 hunks（74 注释/104 成员/176 映射表构建/359 present 重构）+ presented-as 日志行（混合 hunk 197 切片）；hunk 359 捎带的 setPanelBrightness 函数块经"s->release() 尾段恢复"手术剔除；diff -u 生成新补丁 0097-raphael-display-sweetscale.patch（5 hunks，200 行），往返+纯度+排除指纹三重验证。纯度误报两例修正：`scalarInput[0]` 撞基线合法用法（改指纹 `(%llx %llx %llx %llx)`）；补丁生成中 diff 退出码 1 语义修正。
+- CI 三折：push a7aed26（0097 补丁）→ dispatch 误杀在跑的 push run #37（并发组 cancel-in-progress）；dispatch #38/#39 两连死（runner 秒分配即取消、零步骤=池故障）；重派 #40 success（内核 7440577a…，run id 39761972114）。**"push 触发已死"被证伪**：`branches: [main]` 一直在文件里，"ain]" 是显示管道吞 "[m" 的 ANSI 伪影（od 实锤）；一次据错误认知的"修复"提交因 sed 空操作+git nothing-to-commit 被拦，未污染仓库。
+- 判别标记定版：PRESENT = t12 身份 3 + 0096 fg-gen4 3 + `sweetscale`/` (scaled)`（对 r29 内核原始扫描验证纯净）；ABSENT 16 项（0097-charging + `SWEET FB: brightness`=拆分证明 + 0099-0104）。原始扫描 PASS；负向冒烟：r29 内核喂入 t20 管线被标记门正确拒绝（missing: sweetscale pair）——管线双向验证。
+- 构建（t20_build.py，v2 链）：双镜像 17,326,191B；六重校验全过（v2 头/shim/DTB 逐字节=t12/payload 魔数+cmdline 与 t12 全等/ADT+几何/标记/sha256）；debug 恰 1 字节 @0x33172（与 t12/t13 debug 同位）。clean e32618b9… / debug 6c272111…。
+- 文档：FLASH-T20.md（判读树 A 显示层全表：顶角完整=全胜、`(scaled)` 判决行、颗粒感=预期、Display Zoom 真实生效、撕裂回报；回退 t12/r28）；README 双语 7 锚点（显示行 ×2、t13 降上一轮 ×2、t20 双行 ×2、哈希块）；NOTES 存档（设计/拆分/判别/CI 教训）；本 WORKLOG。
+- 发布：raphael-touch-r30（make_latest=false，r28 保持 Latest）；download/ 刷新为 t20 四件套。
+
+Stage Summary:
+- t20 = 0001-0096 + 0097-sweetscale；功能首次上真机，判决 = 锁屏顶角时间/电量完整 + 启动行 `(scaled)` + Display Zoom 有视觉变化
+- 教训双档：①CI"沉默跳过"防闸继续救命（本轮是 runner 池故障三连，第 4 次尝试通过）；②终端显示会吞 "[m"（ANSI 伪影），字节级判断必须 od -c，勿凭 grep/cat 改工作流

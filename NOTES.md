@@ -225,3 +225,10 @@ sweet)-*.patch is skipped. Also: C++ default arguments live in the
 declaration only, but the out-of-line definition must still list ALL
 parameters (publish() lost its 10th param -> IOPMPowerSource::timeRemaining
 getter shadowed the name).
+
+## t20 · sweetscale 整幅缩放（r30，2026-10-22）
+
+- **设计**（历史 0098 的缩放半边）：`start()` 里构建两张最近邻映射表——`fColMap[panel_x] = (x*1125 + 540)/1080`、`fRowMap[panel_y] = (y*2436 + 1170)/2340`（中心对齐），`present()` 对每个面板像素采样其中心落到的逻辑像素；无 `sweetscale` boot-arg 时默认 scale=1（缩放开），`sweetscale=0` 走重构后的居中裁剪回退路径。`presented as 1125x2436 (scaled)` 为启动判决行。
+- **拆分**（scripts/t20_make_patch.py）：0098 四合一（缩放/亮度 DCS/即时息屏/externalMethod 调参日志）按 hunk 字节级拆分——KEEP 缩放 4 hunk + presented-as 日志行（从混合 hunk 197 切出），丢弃捎带在 hunk 359 里的 setPanelBrightness 函数块（present() 的 `s->release();` 之后的尾段直接从规范基恢复）。往返验证（apply==scaled / reverse==base）+ 纯度断言（fDsi/sweetfb_fade/(%llx…) 必须缺席）。
+- **判别标记**：PRESENT `sweetscale` + ` (scaled)`（对 r29 内核与黄金 t12 双向验证纯净）；ABSENT 16 项 = 0097-charging + `SWEET FB: brightness`（拆分证明）+ 0099-0104。构建管线双向门：t20 内核全过，r29 内核喂入被正确拒绝（missing: sweetscale pair）。
+- **CI 教训**：当日 dispatch 两连死（#38/#39：runner 秒分配即取消、零步骤——runner 池故障特征，非补丁问题，补丁根本没被执行到）；重派 #40 success。**push 触发从未坏过**——`branches: [main]` 一直写在文件里，"ain]" 是输出管道把 "[m" 当 ANSI 序列吞掉的显示伪影（od 字节级实锤）；切勿再据此"修复"工作流。dispatch 与 push 同入并发组（xnu-refs/heads/main, cancel-in-progress），dispatch 会误杀在跑的 push run。
