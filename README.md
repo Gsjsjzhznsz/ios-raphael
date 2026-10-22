@@ -14,9 +14,9 @@
 |---|---|---|
 | 引导链 | ✅ 实测可用 | shim → XNU → iOS 锁屏完整启动（`fastboot boot` 免落盘，重启即回安卓引导） |
 | CPU | ✅ 8 核实测 | `8/8 CPUs initialized`（kryo485 匹配表 + PSCI 二次核拉起） |
-| 显示 | ✅ 点亮（稳定版 t12 为居中裁剪；t20 缩放 / t21 亮度+即时息屏 测试轮在架） | 原生 1080×2340 面板；整幅缩放修复已作为 **t20/r30 测试轮** 发布（sweetscale 最近邻映射表，历史 0098 的仅缩放子集，1125×2436 整幅缩到 1080×2340，顶部时间/电量不再被切）；**t21/r31 测试轮**继续上 0098 的亮度 DCS（0x51，2047 满档）+ 即时息屏（DCS 0x28，`sweetfb_fade=1` 回旧渐暗）子集 |
+| 显示 | ✅ 点亮（稳定版 t12 为居中裁剪；t20 缩放 / t21 / t22 测试轮在架） | 原生 1080×2340 面板；整幅缩放修复已作为 **t20/r30 测试轮** 发布（sweetscale 最近邻映射表，历史 0098 的仅缩放子集，1125×2436 整幅缩到 1080×2340，顶部时间/电量不再被切）；**t21/r31 测试轮**上 0098 的亮度 DCS + 即时息屏子集；**t22/r32 测试轮**实锤亮度真通路 = IOMFB **sel 50 setBrightnessCorrection**（t21 日志捕获 backboardd 调用 `sel 50 (10000)`，0..10000 满刻度），感知表映射到面板 DCS 0x51 电平 4..2047；DSI 存活改双控制器（ctrl0/ctrl1）真实命令自证，不再信 ctrl 使能位 |
 | 触摸 | ✅ 实测可用 | GT9886 厂商级 bring-up：真寄存器图 + 784 字节面板配置下发（双供应商）+ doze 控制 |
-| 电池 | 🔶 探针读通（稳定版 t12）；充电监视 t21 测试轮在架 | PM8150B 读通（probe type=0xd）；fg-gen4 真实读数（SOC/电压/电流）为 t13 系（稳定版不含）；**t21/r31 测试轮**上 5s 充电输入监视（USBIN 插拔 + CHGR 状态，插拔 5s 内 publish 到 iOS 状态栏）+ 插拔瞬间 SMB5 输入侧一行全dump（APSD/ICL/power-path/STATUS5） |
+| 电池 | 🔶 探针读通（稳定版 t12）；充电监视 t21 / AppleSmartBattery 注册 t22 测试轮在架 | PM8150B 读通（probe type=0xd）；fg-gen4 真实读数（SOC/电压/电流）为 t13 系（稳定版不含）；**t21/r31 测试轮**上 5s 充电输入监视（USBIN 插拔 + CHGR 状态，插拔 5s 内 publish 到 iOS 状态栏）+ 插拔瞬间 SMB5 输入侧一行全dump（APSD/ICL/power-path/STATUS5）；**t22/r32**：服务以 iOS 状态栏查找的名字注册（personality name = AppleSmartBattery，类名仍 SweetBattery）——t21 日志实锤内核侧插拔/APSD/ICL/FULLON 全通，本轮赌名字匹配 |
 | 亮度 / 息屏 | ❌ 稳定版未含 | DSI DCS 亮度通道与息屏立即全黑系 t14 实验功能（已随回退移除），稳定版为多步渐暗 |
 | USB | ⛔ 已废弃（t14~t19 回退，稳定版无 USB） | 实验轮推进至 t19 三项硬件级修复即全线回退（历史细节：源码深挖+官方源裁决推翻 t18 判读——①"字节复制×4"读值（REFCLK 写 0x2 读回 0x02020202）是 **AHB2PHY 桥（0x6a004）访问降级**特征，非轨未上电（0103 三票经 raphael 官方板级 dtsi 验证对象/电压/编码全对）；②**QUSB2PHY_PRIM_BCR 真偏移 0x26000**（raphael 官方 GCC 复位表；主线 0x12000 在此硅片不存在，t17/t18 一直在脉冲空气）；③**GUSB3PIPECTL.SUSPHY(0xc2c0 bit17) 从未清除**（Qualcomm 9bdbd5286ea5：遗留=寄存器写失败→整机崩溃；t16 无 femto 也楔死吻合）。控制台几何定案（fbcon 环绕+清屏）：所有照片都是单次启动单次 probe，光标冻在 ep0 print，其后两行空白=从未写过；t16 重读证明 ep0 后系统继续跑完启动——**只楔死 CPU0**，45s 触摸线程撞毒化 NoC → RPM/TZ 热复位 = 40-50s 重启完整因果链。t19：ahb2phy 桥使能 + 双 BCR 脉冲 + U3 SUSPHY 清除 + 20ms settle + **降级中止**（失败=稳定锁屏+照片，45s 重启循环机制性终结）+ `SWEET RST:` PON 复位分类器（SPMI 只读） |
 | GPU | ❌ 无驱动 | 界面为 CPU 软渲染，滑动卡顿属正常 |
@@ -39,7 +39,9 @@
 | `raphael-t13-fggen4-clean.img` | **上一测试轮（r29）**：t13 fg-gen4 硬件电量计重建版——稳定版底座上真电池读数（monotonic SOC / 实测电压电流 + SMB5 充电语义 + 30s 轮询）；内核由回退树 CI 重建（标记集验证），v2 头工具链字节级验证 |
 | `raphael-t13-fggen4-debug.img` | r29 排障版：同 clean 但**屏幕控制台常开**（仅改 1 字节 sweetfb_noconsole 1→0） |
 | `raphael-t20-sweetscale-clean.img` | **当前测试轮（r30）**：整幅显示缩放——1125×2436 最近邻缩到 1080×2340（逐列/逐行映射表，中心对齐），顶部时间/电量两角不再被居中裁剪切掉；历史 0098 的仅缩放子集（亮度/息屏/日志搭车件全部排除）；首次真机视觉测试（t14 时代该功能从未被肉眼验证） |
-| `raphael-t21-bright-chg-clean.img` | **当前测试轮（r31）**：亮度/息屏 + 充电监视 —— ① DSI ctrl0 DCS 通路：亮度 0x51（11 位大端 ≤2047）、息屏/点亮 0x28/0x29；② **即时息屏**（一次黑帧 + 面板真睡眠，`sweetfb_fade=1` 回旧渐暗）；③ setProperties 亮度钩子 + user client 转发（Apple IOHIDEventServiceUserClient 同款）；externalMethod 日志升级为每 selector 前 3 次并带标量值（亮度通路猎取）；④ 电池 5s 充电输入监视 + 插拔转移一行全dump（inputCheck 抢先缓存 bug 已修） |
+| `raphael-t22-bright-chg-clean.img` | **当前测试轮（r32）**：亮度真通路 + 电池服务名 —— ① IOMFB **sel 50 setBrightnessCorrection**（0..10000 → DCS 0x51 电平 4..2047 感知映射；sel 50 每次调用必记日志）；② DSI 存活探测重构：ctrl0→ctrl1 各试 DCS 0x29，谁完成 command DMA 谁是宿主（t21 实锤 ctrl 使能位不可信）；③ DSI 未通时亮度请求记忆 pending、亮屏自动补发；④ setProperties dump 全部键名；⑤ 电池以 **AppleSmartBattery** 名字注册（判决行 `registering as AppleSmartBattery`） |
+| `raphael-t22-bright-chg-debug.img` | r32 排障版：同 clean 但**屏幕控制台常开**（仅改 1 字节 sweetfb_noconsole 1→0，位 @0x33160） |
+| `raphael-t21-bright-chg-clean.img` | **上一测试轮（r31）**：亮度/息屏 + 充电监视 —— ① DSI ctrl0 DCS 通路：亮度 0x51（11 位大端 ≤2047）、息屏/点亮 0x28/0x29；② **即时息屏**（一次黑帧 + 面板真睡眠，`sweetfb_fade=1` 回旧渐暗）；③ setProperties 亮度钩子 + user client 转发（Apple IOHIDEventServiceUserClient 同款）；externalMethod 日志升级为每 selector 前 3 次并带标量值（亮度通路猎取）；④ 电池 5s 充电输入监视 + 插拔转移一行全dump（inputCheck 抢先缓存 bug 已修） |
 | `raphael-t20-sweetscale-debug.img` | r30 排障版：同 clean 但**屏幕控制台常开**（仅改 1 字节 sweetfb_noconsole 1→0） |
 | `raphael-t21-bright-chg-debug.img` | r31 排障版：同 clean 但**屏幕控制台常开**（仅改 1 字节 sweetfb_noconsole 1→0） |
 | ~~`raphael-t19-ahb2phy-bcr-clean.img`~~ | ⚠️ **勿刷（r27）**：v1 头打包错误（本机 ABL 只接受 v2 头），实测黑屏；USB 供电轮 t14~t19 已全线废弃回退 |
@@ -57,7 +59,9 @@ t13-clean: 82c71576bb58b9279e71ddcc03335a1e66a858679abb4d3abac9d65fe88044e4 （r
 t13-debug: 4f1f5f65cd96463030729ffdba8787ad8c880dd4aff5a4641bd8fa0c1430770d （同上）
 t20-clean: e32618b9b94803ca2df80612dec599a9abb3ab6cb7bd058a5ca91b456bee5df8 （r30 整幅缩放，v2 头正确打包，当前测试轮）
 t20-debug: 6c272111370ee41ecf1efe769e74587b41fb7ab44aca9571f5a86acb79523c19 （同上）
-t21-clean: 312259a106a89c2cbfa2f534123576ef5e409948a2f9c7001cd055ed88d02bcb （r31 亮度DCS+即时息屏+充电5s监视，当前测试轮）
+t22-clean: 9fade8f052625c171effc83c51514ca9aa66bda64ff895fe6a61ca8204110583 （r32 亮度sel50真通路+DSI双控探测+电池AppleSmartBattery，当前测试轮）
+t22-debug: 0b4fa757aef9a568e8412cba4b80226b1289403d0f427cd380962866ab13326f （同上）
+t21-clean: 312259a106a89c2cbfa2f534123576ef5e409948a2f9c7001cd055ed88d02bcb （r31 亮度DCS+即时息屏+充电5s监视，上一测试轮）
 t21-debug: e7f19586cbcb641dbe7efe0f21db69fd8a68ff21ef032ceec27ad8144a28bc09 （同上）
 t14-clean: 3374ac69efb17155de6a61792e5753053c25669317bb5464aa5fa284e8da3a3c （USB 挂死，勿刷）
 t18-clean: a16e17250b16f6b253085175922e196ec626f898d2165b7b811a996f69fa29ee
@@ -199,7 +203,9 @@ adb pull /tmp/sweet-log.bin
 | `raphael-t13-fggen4-clean.img` | **Previous test round (r29)**: the t13 fg-gen4 hardware fuel gauge, rebuilt — real battery readings on top of the stable base (monotonic SOC / measured V-I + SMB5 charger semantics + 30 s polling); kernel rebuilt by CI on the rolled-back tree (marker-verified), packaged on the byte-proven v2 chain |
 | `raphael-t13-fggen4-debug.img` | r29 troubleshooting build: same clean, on-screen console always on (1-byte patch) |
 | `raphael-t20-sweetscale-clean.img` | **Current test round (r30)**: whole-frame display scaling — 1125×2436 nearest-neighbour-scaled to 1080×2340 (per-column/per-row maps, centres aligned), so the top clock/battery corners are no longer cropped; the scale-only subset of the historical 0098 (brightness/instant-off/logging all excluded); the first on-device visual test of this feature |
-| `raphael-t21-bright-chg-clean.img` | **Current test round (r31)**: brightness/instant-off + charging watch — ① DSI ctrl0 DCS path: brightness 0x51 (11-bit big-endian ≤2047), display off/on 0x28/0x29; ② **instant display off** (one black memset + real panel sleep, `sweetfb_fade=1` restores the legacy fade); ③ setProperties brightness hook + user-client forwarding (same pattern as Apple's IOHIDEventServiceUserClient); externalMethod logging upgraded to the first 3 uses per selector with scalar values (brightness-path hunt); ④ battery 5 s charger-input watch + one-line SMB5 input dump on plug transitions (inputCheck ahead-caching bug fixed) |
+| `raphael-t22-bright-chg-clean.img` | **Current test round (r32)**: the real brightness channel + battery service name — ① IOMFB **sel 50 setBrightnessCorrection** (0..10000 -> panel DCS 0x51 level 4..2047 via a perceptual table; sel 50 logged on every call); ② DSI liveness probe reworked: ctrl0 then ctrl1 each get one DCS 0x29, the first host completing a command DMA wins (t21 proved the ctrl enable bit lies); ③ brightness requests remembered while the DSI path is down, applied at the next display-on; ④ setProperties dumps every key; ⑤ battery registers under the name **AppleSmartBattery** (verdict line `registering as AppleSmartBattery`) |
+| `raphael-t22-bright-chg-debug.img` | r32 troubleshooting build: same clean, on-screen console always on (1-byte patch @0x33160) |
+| `raphael-t21-bright-chg-clean.img` | **Previous test round (r31)**: brightness/instant-off + charging watch — ① DSI ctrl0 DCS path: brightness 0x51 (11-bit big-endian ≤2047), display off/on 0x28/0x29; ② **instant display off** (one black memset + real panel sleep, `sweetfb_fade=1` restores the legacy fade); ③ setProperties brightness hook + user-client forwarding (same pattern as Apple's IOHIDEventServiceUserClient); externalMethod logging upgraded to the first 3 uses per selector with scalar values (brightness-path hunt); ④ battery 5 s charger-input watch + one-line SMB5 input dump on plug transitions (inputCheck ahead-caching bug fixed) |
 | `raphael-t20-sweetscale-debug.img` | r30 troubleshooting build: same clean, on-screen console always on (1-byte patch) |
 | `raphael-t21-bright-chg-debug.img` | r31 troubleshooting build: same clean, on-screen console always on (1-byte patch) |
 | ~~`raphael-t19-ahb2phy-bcr-clean.img`~~ | ⚠️ **Do NOT flash (r27)**: v1-header packaging bug (this ABL only accepts v2 headers) — black screen; the t14–t19 USB line is fully reverted |
