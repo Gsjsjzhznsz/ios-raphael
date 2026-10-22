@@ -265,11 +265,11 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  }
  
  static uint64_t sweet_fb_logged;        /* selectors already logged (< 64) */
-+static uint32_t sweet_fb_sel12_log;     /* raphael sel12 probe lines */
++static uint8_t sweet_fb_selhits[64];    /* raphael: log lines per selector */
  
  IOReturn
  IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
-@@ -634,9 +833,47 @@
+@@ -634,7 +833,29 @@
  				fFB->fDirty = true;     /* on: redraw the latest frame */
  			}
  			IOLockUnlock(fFB->fLock);
@@ -297,28 +297,19 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +			{
 +				IOLog("SWEET FB: display %s\n", off ? "off" : "on");
 +			}
-+		}
-+		break;
-+#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
-+	case 12:
-+		/* Unknown 1-scalar selector that fired once from backboardd right
-+		 * after display-on; a prime brightness-path candidate. Log the raw
-+		 * argument (rate-limited) with zero behaviour change, so one log
-+		 * round identifies it. */
-+		if (args->scalarInputCount >= 1 && sweet_fb_sel12_log < 16) {
-+			sweet_fb_sel12_log++;
-+			char pname[32];
-+			proc_selfname(pname, sizeof(pname));
-+			IOLog("SWEET FB: sel12 %s arg0=%llu (%llx)\n", pname,
-+			    (unsigned long long)args->scalarInput[0],
-+			    (unsigned long long)args->scalarInput[0]);
  		}
  		break;
-+#endif
  	case kSweetFBSwapWait:
- 	default:
- 		break;
-@@ -654,8 +891,13 @@
+@@ -648,14 +869,21 @@
+ 	if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL) {
+ 		bzero(args->structureOutput, args->structureOutputSize);
+ 	}
+-	if (selector >= 64 || !(sweet_fb_logged & (1ULL << selector))) {
++	if (selector >= 64 || !(sweet_fb_logged & (1ULL << selector)) ||
++	    sweet_fb_selhits[selector] < 3) {
+ 		if (selector < 64) {
+ 			sweet_fb_logged |= 1ULL << selector;
++			sweet_fb_selhits[selector]++;   /* first 3 uses each: brightness hunt */
  		}
  		char name[32];
  		proc_selfname(name, sizeof(name));
