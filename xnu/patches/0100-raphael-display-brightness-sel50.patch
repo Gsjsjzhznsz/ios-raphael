@@ -1,0 +1,221 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 5c5ffd2..2247a50 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -47,6 +47,7 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t phys, vm_size_t size);
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/IOWorkLoop.h>
+ #include <IOKit/IOTimerEventSource.h>
++#include <libkern/c++/OSCollectionIterator.h>
+ #include <IOKit/system.h>
+ #include <pexpert/pexpert.h>
+ #include <kern/clock.h>
+@@ -63,7 +64,8 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t phys, vm_size_t size);
+  * in secure sessions: dwords [wc_lo wc_hi data_id flags] then payload,
+  * padded with 0xff; flags bit7 = last command, bit6 = payload present
+  * (dsi_ctrl_copy_and_pad_cmd / MIPI_DSI_MSG_LASTCOMMAND). */
+-#define SWEET_FB_DSI_PA               0x0ae94000ull
++#define SWEET_FB_DSI0_PA              0x0ae94000ull   /* DSI controller 0 */
++#define SWEET_FB_DSI1_PA              0x0ae96000ull   /* DSI controller 1 */
+ #define SWEET_FB_DSI_LEN              0x400ull
+ #define SWEET_FB_DSI_CTRL             0x000u
+ #define SWEET_FB_DSI_CMD_DMA_CTRL     0x03cu
+@@ -96,9 +98,9 @@ fbDsiW(vm_offset_t base, uint32_t off, uint32_t v)
+ static bool
+ fbDsiSend(vm_offset_t dsi, const uint32_t *dw, uint32_t count)
+ {
+-	if ((fbDsiR(dsi, SWEET_FB_DSI_CTRL) & 1u) == 0u) {
+-		return false;	/* controller off: nothing to talk to */
+-	}
++	/* Liveness is proven by the command DMA completing, not by the
++	 * enable bit: t21 read ctrl=0x20030000 on ctrl0 with the panel
++	 * clearly on, so a register gate disabled the whole DCS path. */
+ 	/* Reset the TPG DMA FIFO, then FIFO mode with the custom pattern. */
+ 	fbDsiW(dsi, SWEET_FB_DSI_TPG_CTRL, 0x0);
+ 	fbDsiW(dsi, SWEET_FB_DSI_TPG_FIFO_RESET, 0x1);
+@@ -140,6 +142,7 @@ enum {
+ 	kSweetFBGetID                   = 7,
+ 	kSweetFBGetDisplaySize          = 8,
+ 	kSweetFBRequestPowerChange      = 12,
++	kSweetFBSetBrightnessCorrection = 50,
+ 	kSweetFBIsMainDisplay           = 18,
+ 	kSweetFBGetDotPitch             = 28,
+ 	kSweetFBNotifications           = 72,
+@@ -203,7 +206,7 @@ public:
+ 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
+ 	bool          fPowerOff;      /* RequestPowerChange(0) */
+ 	uint32_t      fFadeStep;      /* fade-out steps done while off */
+-	vm_offset_t   fDsi;           /* raphael: DSI ctrl0 mapping or 0 */
++	vm_offset_t   fDsi;           /* raphael: winning DSI host, or 0 */
+ 	bool          fDsiOk;         /* panel DCS path proven working */
+ 	uint32_t      fBrightness;    /* last panel brightness level */
+ 	bool          fInstantOff;    /* blank at once instead of fading */
+@@ -326,23 +329,41 @@ AppleCLCD::start(IOService *provider)
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 
+ #if defined(ARM64_BOARD_CONFIG_RAPHAEL)
+-	/* Panel DCS path: DSI ctrl0 was left clocked by ABL (it streams the
+-	 * splash); prove it once, then apply any boot-arg start level. */
+-	fDsi = ml_io_map(SWEET_FB_DSI_PA, SWEET_FB_DSI_LEN);
++	/* Panel DCS path: ABL leaves the DSI host streaming the splash, but the
++	 * controller enable bit is not a reliable liveness signal (t21 read
++	 * ctrl=0x20030000 with the panel clearly on). Prove the FIFO command
++	 * path with a real command instead: try ctrl0 then ctrl1 and keep the
++	 * first host that completes a command DMA. The probe is DCS 0x29
++	 * (display on): a no-op for an already-live panel. */
+ 	fInstantOff = true;   /* blank at once; sweetfb_fade=1 restores it */
+ 	int fade = 0;
+ 	if (PE_parse_boot_argn("sweetfb_fade", &fade, sizeof(fade)) && fade == 1) {
+ 		fInstantOff = false;      /* legacy multi-vsync fade */
+ 	}
++	fDsi = 0;
+ 	fDsiOk = false;
+ 	fBrightness = 0;
+-	if (fDsi != 0) {
+-		uint32_t ctrl = fbDsiR(fDsi, SWEET_FB_DSI_CTRL);
+-		fDsiOk = (ctrl & 1u) != 0u;
+-		IOLog("SWEET FB: DSI ctrl0 ctrl=0x%x int=0x%x dma=0x%x%s\n", ctrl,
+-				fbDsiR(fDsi, SWEET_FB_DSI_INT_CTRL),
+-				fbDsiR(fDsi, SWEET_FB_DSI_CMD_DMA_CTRL),
+-				fDsiOk ? "" : " (engine off; DCS disabled)");
++	const uint32_t probeDw = 0x29u | (0x05u << 16) | (0x80u << 24);
++	const vm_offset_t dsiPas[2] = { SWEET_FB_DSI0_PA, SWEET_FB_DSI1_PA };
++	const char *const dsiNames[2] = { "ctrl0", "ctrl1" };
++	for (unsigned i = 0; i < 2 && !fDsiOk; i++) {
++		vm_offset_t dsi = ml_io_map(dsiPas[i], SWEET_FB_DSI_LEN);
++		if (dsi == 0) {
++			continue;
++		}
++		IOLog("SWEET FB: DSI %s @0x%llx ctrl=0x%x int=0x%x dma=0x%x tpg=0x%x\n",
++		    dsiNames[i], (uint64_t)dsi, fbDsiR(dsi, SWEET_FB_DSI_CTRL),
++		    fbDsiR(dsi, SWEET_FB_DSI_INT_CTRL),
++		    fbDsiR(dsi, SWEET_FB_DSI_CMD_DMA_CTRL),
++		    fbDsiR(dsi, SWEET_FB_DSI_TPG_CTRL));
++		if (fbDsiSend(dsi, &probeDw, 1)) {
++			fDsi = dsi;
++			fDsiOk = true;
++			IOLog("SWEET FB: DSI %s probe ok; panel DCS enabled\n",
++			    dsiNames[i]);
++		} else {
++			IOLog("SWEET FB: DSI %s probe timeout\n", dsiNames[i]);
++		}
+ 	}
+ 	int bright = -1;
+ 	PE_parse_boot_argn("sweetfb_bright", &bright, sizeof(bright));
+@@ -621,6 +642,32 @@ AppleCLCD::present(const uint8_t *rec)
+ }
+ 
+ #if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++/* CoreBrightness/backboardd drives panel brightness through IOMFB sel 50
++ * (setBrightnessCorrection) in 0..10000 units; the t21 log caught
++ * backboardd calling it with 10000. Map that onto the panel's 11-bit
++ * DCS 0x51 level (4..2047) with a perceptual table so the low end of the
++ * slider is usable; linear between points. */
++static uint32_t
++sweetFbPanelLevel(uint32_t v)
++{
++	static const uint32_t vv[] = { 0, 1000, 2000, 3000, 4000, 5000,
++	    6000, 7000, 8000, 9000, 10000 };
++	static const uint32_t ll[] = { 4, 14, 40, 92, 180, 320,
++	    530, 830, 1220, 1620, 2047 };
++	if (v >= 10000u) {
++		return 2047u;
++	}
++	for (unsigned i = 1; i < sizeof(vv) / sizeof(vv[0]); i++) {
++		if (v <= vv[i]) {
++			uint32_t span = vv[i] - vv[i - 1];
++			uint32_t off = v - vv[i - 1];
++			return ll[i - 1] +
++			    (uint32_t)(((uint64_t)(ll[i] - ll[i - 1]) * off) / span);
++		}
++	}
++	return SWEET_FB_BRIGHT_MIN;
++}
++
+ /* DCS 0x51, big-endian 11-bit level, the vendor _ss variant. */
+ void
+ AppleCLCD::setPanelBrightness(uint32_t level)
+@@ -632,6 +679,8 @@ AppleCLCD::setPanelBrightness(uint32_t level)
+ 		level = SWEET_FB_BRIGHT_MAX;
+ 	}
+ 	if (!fDsiOk) {
++		/* Remember the ask; the next display-on applies it. */
++		fBrightness = level;
+ 		return;
+ 	}
+ 	uint32_t dw[2];
+@@ -662,6 +711,20 @@ AppleCLCD::setProperties(OSObject *properties)
+ {
+ 	OSDictionary *dict = OSDynamicCast(OSDictionary, properties);
+ 	if (dict != NULL) {
++		/* Dump every key: the t21 hook only matched two guessed names and
++		 * never fired, so any other property channel stays invisible. */
++		OSCollectionIterator *iter =
++		    OSCollectionIterator::withCollection(dict);
++		if (iter != NULL) {
++			while (OSObject *obj = iter->getNextObject()) {
++				OSSymbol *key = OSDynamicCast(OSSymbol, obj);
++				if (key != NULL) {
++					IOLog("SWEET FB: setProperties key %s\n",
++					    key->getCStringNoCopy());
++				}
++			}
++			iter->release();
++		}
+ 		OSNumber *n = OSDynamicCast(OSNumber,
+ 		    dict->getObject("brightness"));
+ 		if (n == NULL) {
+@@ -669,9 +732,15 @@ AppleCLCD::setProperties(OSObject *properties)
+ 			    dict->getObject("ApplePanelBrightness"));
+ 		}
+ 		if (n != NULL) {
+-			IOLog("SWEET FB: setProperties brightness %u\n",
+-			    n->unsigned32BitValue());
+-			setPanelBrightness(n->unsigned32BitValue());
++			uint32_t v = n->unsigned32BitValue();
++			IOLog("SWEET FB: setProperties brightness %u\n", v);
++			if (v > SWEET_FB_BRIGHT_MAX) {
++				if (v > 10000u) {
++					v = 10000u;
++				}
++				v = sweetFbPanelLevel(v);
++			}
++			setPanelBrightness(v);
+ 		}
+ 	}
+ 	return IOService::setProperties(properties);
+@@ -858,6 +927,18 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			}
+ 		}
+ 		break;
++	case kSweetFBSetBrightnessCorrection:
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++		/* The brightness slider channel: 0..10000 in, panel DCS level out. */
++		if (args->scalarInputCount >= 1) {
++			uint64_t v = args->scalarInput[0];
++			if (v > 10000u) {
++				v = 10000u;
++			}
++			fFB->setPanelBrightness(sweetFbPanelLevel((uint32_t)v));
++		}
++#endif
++		break;
+ 	case kSweetFBSwapWait:
+ 	default:
+ 		break;
+@@ -869,11 +950,12 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 	if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL) {
+ 		bzero(args->structureOutput, args->structureOutputSize);
+ 	}
+-	if (selector >= 64 || !(sweet_fb_logged & (1ULL << selector)) ||
+-	    sweet_fb_selhits[selector] < 3) {
++	if (selector == kSweetFBSetBrightnessCorrection || selector >= 64 ||
++	    !(sweet_fb_logged & (1ULL << selector)) ||
++	    sweet_fb_selhits[selector] < 8) {
+ 		if (selector < 64) {
+ 			sweet_fb_logged |= 1ULL << selector;
+-			sweet_fb_selhits[selector]++;   /* first 3 uses each: brightness hunt */
++			sweet_fb_selhits[selector]++;   /* first 8 uses each */
+ 		}
+ 		char name[32];
+ 		proc_selfname(name, sizeof(name));
