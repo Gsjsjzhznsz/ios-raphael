@@ -448,3 +448,26 @@ Stage Summary:
 - t21 = t20 底座 + 0098（亮度 DCS/即时息屏/setProperties+userclient 转发/前3次标量日志）+ 0099（5s 充电输入监视/插拔转移全dump/inputCheck 缓存 bug 修复）
 - 亮度滑条本轮目标 = 通路识别（setProperties 或 externalMethod 某 selector，日志必留痕）；息屏目标 = 瞬时全黑 + AMOLED 真睡眠；充电目标 = 插拔 ≤5s 状态栏出闪电
 - 教训：①生成补丁一律 diff -u（漏 -u 出 ed 格式）；②Edit 工具会整体展开 tab——补丁链源文件编辑必须用 python 字节级替换；③标记判别串必须先对基础链验纯（GUSB2PHYCFG/QSCRATCH 等在 0074 基础 USB 补丁里就有）；④kSweetFBRequestPowerChange==12，别把 display-on 的 sel12 当亮度
+
+---
+
+## Task 33 (r32/t22) — 亮度真通路 sel 50 + DSI 双控制器探测 + AppleSmartBattery（2026-10-22）
+
+**输入**：用户回报"亮度无法调节，充电状态还是没有"+ 新 sweet-log.bin（t21 实测，8331 行）。
+
+**t21 日志三大判决**：
+1. **电池内核侧全通**：probe 全 0 错误；52%→54% SOC 跟踪；插充电器瞬间 `input plugin=1 apsd=DCP(0x8) icl=0xa(500mA) path=0x95 st5=0x99 chg=FULLON(0x3) charging=1`，拔掉回 plugin=0。缺口只剩内核→UI 的**消费端**。
+2. **DCS 门禁误杀**：`DSI ctrl0 ctrl=0x20030000 (engine off; DCS disabled)` —— 面板明明亮着，ctrl bit0 不是可靠的存活信号，t21 整个 DCS 路径（亮度+息屏面板睡眠）被自禁。
+3. **亮度通路实锤**：Apple Wiki `Dev:IOMobileFramebuffer` selector 表与实机日志互证（sel 6=swapWait (1,0x80000000,0)、sel 12=requestPowerChange、sel 8=getDisplaySize out2、sel 5 swapEnd 1132B 全吻合）→ **sel 50 = setBrightnessCorrection**（iOS 8+ 从 49 改 50），日志捕获 backboardd `sel 50 in 2/0 (10000 0)` ×2 —— iOS 亮度内部 0..10000 满刻度。t21 未实现（default 直通返回 0x0）→ 滑条无效。
+
+**方法**：
+- SweetBattery.cpp 重建 = 0062 pristine + 0092/0095/0096/0099 回放（25133B 零 FAIL）；SweetFramebuffer.cpp = 0046→0098 十补丁链回放（891 行）；KernelConfigTables.cpp = apple-oss-distributions xnu-8796.101.5 pristine + 8 补丁回放。
+- iPhone X (iPhone10,3) **iOS 16.7.16 (20H392，与 rootfs 同版本)** kernelcache.zip64 Range 下载到手（kernelcache.release.iphone10b，IMG4/bvx2=LZFSE 未解压——本轮无需）。
+- **0100**：sel 50 处理器（0..10000 → DCS 0x51 电平 4..2047 感知表映射，低端可用、满档 2047）；DSI 存活改真实命令自证（ctrl0 0x0ae94000 → ctrl1 0x0ae96000 各试 DCS 0x29，先完成 command DMA 者为宿主）；DSI 未通时亮度请求记 pending、亮屏补发；setProperties dump 全部键名；sel 50 每次必记日志、其余 selector 上限 3→8。
+- **0101**：personality 加 `'name' = AppleSmartBattery`（类名 SweetBattery 不变）——iOS 状态栏按名找电池；判决行 `registering as AppleSmartBattery`。
+
+**工程**：11 锚点全中；t22_build.py 自检（t20 字节级复现）+ 六重校验（cmdline 逐字/ADT 内嵌逐字节/头仅 ramdisk_size 差/18 标记在场/10 判别串零泄漏/debug 恰 1 字节 @0x33160）；git 协议推送连续 TLS/HTTP2 失败 → **contents API 推送**（c3ae623 + 3fc8f36）；CI run 39804489250 被并发组级联取消（无日志）→ rerun attempt 2 = **success**（39807718995，kernel.development.raphael b02a278b…）；Release `raphael-bright-t22`（id 420942528）3 资产，服务端 digest 与本地逐字节一致（clean 9fade8f0… / debug 0b4fa757…）。
+
+**自动亮度定性**：ALS → CoreBrightness → **同一条 sel 50**。t22 修通 sel 50 = 自动亮度的执行端就绪；缺的是 ALS 传感器数据（I2C 光感驱动 + AppleALS HID 事件）→ 下一轮任务（MiCode raphael-p-oss dtsi 定芯片型号）。
+
+**下一轮判决点**：①启动行 `DSI ctrl0/ctrl1 probe ok`（谁宿主）；②拖滑条 `sel 50 (NNNN)` → `brightness NNN` 行 + 屏幕是否跟随；③插电 ≤5s 闪电 + `registering as AppleSmartBattery`。
