@@ -1,0 +1,216 @@
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -40,13 +40,50 @@
+ #define SWEETBATT_IBATT              (SWEETBATT_BATT_INFO_BASE + 0xA2u)
+ #define SWEETBATT_IBATT_CP           (SWEETBATT_BATT_INFO_BASE + 0xA8u)
+ #define SWEETBATT_USBIN_RT_STS       0x1310u
++#define SWEETBATT_APSD_STATUS        0x1307u
++#define SWEETBATT_APSD_RESULT        0x1308u
++#define SWEETBATT_ICL_STATUS         0x1107u
++#define SWEETBATT_POWER_PATH_STATUS  0x110Bu
+ #define SWEETBATT_CHGR_STATUS1       0x1006u
+ #define SWEETBATT_CHGR_STATUS2       0x1007u
++#define SWEETBATT_CHGR_STATUS5       0x100Bu
+ #define SWEETBATT_CHGR_STATUS7       0x100Du
+ #define SWEETBATT_USBIN_PLUGIN_BIT   0x10u
+ #define SWEETBATT_CAPACITY_MAH       4000u
+ #define SWEETBATT_GAUGE_NAME         "PM8150B fg-gen4"
+ 
++/* APSD charger classification (smb5-reg.h, single-bit result). */
++static const char *
++fgApsdName(uint8_t result)
++{
++	switch (result & 0x7fu) {
++	case 0x40u:
++		return "QC3.0";
++	case 0x20u:
++		return "QC2.0";
++	case 0x10u:
++		return "FLOAT";
++	case 0x08u:
++		return "DCP";
++	case 0x04u:
++		return "CDP";
++	case 0x02u:
++		return "OCP";
++	case 0x01u:
++		return "SDP";
++	default:
++		return "none";
++	}
++}
++
++static const char *
++fgChgStateName(unsigned state)
++{
++	static const char *names[] = { "INHIBIT", "TRICKLE", "PRE", "FULLON",
++	    "TAPER", "TERMINATE", "PAUSE", "DISABLE" };
++	return state < 8 ? names[state] : "?";
++}
++
+ /* Shadow-verified reads, per vendor fg-util.c: fg-gen4 exposes each live
+  * datum next to an atomically latched copy (_CP); equal values certify a
+  * non-torn sample without any HOLD side effects. */
+@@ -125,12 +162,16 @@
+ 	bool fTimerAdded, fRunning, fReal;
+ 	int fLastMode;
+ 	int fLastPercent;
++	unsigned fTick;
++	int fLastPlugin;    /* raphael: last USBIN plugin (0/1, -1 unknown) */
++	int fLastChgState;  /* raphael: last CHGR_STATUS1[2:0] (-1 unknown) */
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+ 	void publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	    bool capable, bool charging, bool full, bool measured, bool currentValid,
+ 	    int timeRemaining = -1);
+ 	void poll(void);
++	bool inputCheck(void);
+ 	static void timerFired(OSObject *owner, IOTimerEventSource *sender);
+ 	static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
+ 	static bool readWord(unsigned address, uint16_t *value);
+@@ -171,6 +212,9 @@
+ 	}
+ 	fLastMode = -1;
+ 	fLastPercent = -1;
++	fTick = 0;
++	fLastPlugin = -1;
++	fLastChgState = -1;
+ 	return true;
+ }
+ 
+@@ -358,6 +402,34 @@
+ 		minutes = (int)(((int64_t)(SWEETBATT_CAPACITY_MAH - remaining) *
+ 		    60u) / (int64_t)ma);
+ 	}
++	/* Input-path transition log: when the plug or charge state moves,
++	 * dump every input register the SMB5 state machine exposes, so one
++	 * line explains what the PMIC saw (and why the UI changed or did
++	 * not). Reads are best-effort; a failed read shows as 0xff. */
++	if ((int)external != fLastPlugin || (int)state != fLastChgState) {
++		uint8_t apsd = 0, icl = 0, path = 0, st5 = 0;
++		if (sweet_spmi_read(SWEETBATT_SID, SWEETBATT_APSD_RESULT, &apsd)) {
++			apsd = 0xff;
++		}
++		if (sweet_spmi_read(SWEETBATT_SID, SWEETBATT_ICL_STATUS, &icl)) {
++			icl = 0xff;
++		}
++		if (sweet_spmi_read(SWEETBATT_SID, SWEETBATT_POWER_PATH_STATUS,
++			    &path)) {
++			path = 0xff;
++		}
++		if (sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS5, &st5)) {
++			st5 = 0xff;
++		}
++		IOLog("SWEET BATTERY: input plugin=%d apsd=%s(0x%x) "
++		    "icl=0x%x(%umA) path=0x%x st5=0x%x usbsts=0x%x "
++			    "chg=%s(0x%x) charging=%d\n",
++			(int)external, fgApsdName(apsd), apsd, icl,
++			icl == 0xffu ? 0u : (unsigned)icl * 50u, path, st5, usb,
++			fgChgStateName(state), chg, (int)charging);
++		fLastPlugin = (int)external;
++		fLastChgState = (int)state;
++	}
+ 	publish(percent, mv, ma, external, capable, charging, full, true,
+ 	    true, minutes);
+ #else
+@@ -411,12 +483,47 @@
+ {
+ 	SweetBattery *self = OSDynamicCast(SweetBattery, owner);
+ 	if (self && self->fRunning) {
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++		/* 5 s fast tick: two SPMI reads watch the charger input and
++		 * trigger a full poll the moment it moves; a full sample
++		 * still runs every 30 s regardless. */
++		self->fTick++;
++		if (self->inputCheck() || (self->fTick % 6u) == 0u) {
++			self->poll();
++		}
++		sender->setTimeoutMS(5000);
++#else
+ 		self->poll();
+ 		sender->setTimeoutMS(30000);
++#endif
+ 	}
+ }
+ 
+ bool
++SweetBattery::inputCheck(void)
++{
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++	/* Quick USBIN/CHGR sample compared against the values poll() cached.
++	 * Returns true when they moved so timerFired runs a full poll (whose
++	 * transition block then logs the complete input line, republishes to
++	 * powerd and takes over the caching). inputCheck deliberately does
++	 * NOT cache: it would swallow the transition log (t21 fix of the
++	 * historical 0097, whose transition dump could never fire). */
++	uint8_t usb = 0, chg = 0;
++	if (!fReal ||
++	    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_USBIN_RT_STS, &usb) ||
++	    sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS1, &chg)) {
++		return false;
++	}
++	int plugin = (usb & SWEETBATT_USBIN_PLUGIN_BIT) != 0;
++	int state = chg & 7;
++	return plugin != fLastPlugin || state != fLastChgState;
++#else
++	return false;
++#endif
++}
++
++bool
+ SweetBattery::start(IOService *provider)
+ {
+ 	if (!IOPMPowerSource::start(provider)) {
+@@ -430,7 +537,8 @@
+ 		/* One-shot fg-gen4/SMB5 probe: err/value pairs plus derived
+ 		 * units make a single log line a complete verdict. */
+ 		uint8_t type = 0, sys = 0, msoc = 0, msoccp = 0, usb = 0,
+-		    chg = 0, chg2 = 0, chg7 = 0;
++		    chg = 0, chg2 = 0, chg7 = 0, apsd = 0, icl = 0, path = 0,
++		    st5 = 0;
+ 		uint8_t v0 = 0, v1 = 0, vc0 = 0, vc1 = 0;
+ 		uint8_t i0 = 0, i1 = 0;
+ 		int e_type = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_TYPE, &type);
+@@ -447,19 +555,27 @@
+ 		int e_chg = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS1, &chg);
+ 		int e_c2 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS2, &chg2);
+ 		int e_c7 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS7, &chg7);
++		int e_ap = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_APSD_RESULT, &apsd);
++		int e_icl = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_ICL_STATUS, &icl);
++		int e_pp = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_POWER_PATH_STATUS,
++		    &path);
++		int e_s5 = sweet_spmi_read(SWEETBATT_SID, SWEETBATT_CHGR_STATUS5, &st5);
+ 		unsigned vraw = (unsigned)v0 | ((unsigned)v1 << 8);
+ 		unsigned vcp = (unsigned)vc0 | ((unsigned)vc1 << 8);
+ 		int iraw = (int)((unsigned)i0 | ((unsigned)i1 << 8));
+ 		int sraw = (iraw & 0x8000) ? iraw - 65536 : iraw;
+ 		IOLog("SWEET BATTERY: probe type=%d/%#x sys=%d/%#x "
+ 		    "msoc=%d/%#x,%#x(%u%%) v=%d/%#x,%#x(%umV) i=%d/%#x(%dmA) "
+-		    "usb=%d/%#x chg=%d/%#x c2=%d/%#x c7=%d/%#x\n",
++		    "usb=%d/%#x chg=%d/%#x c2=%d/%#x c7=%d/%#x apsd=%d/%#x(%s) "
++		    "icl=%d/%#x pp=%d/%#x s5=%d/%#x\n",
+ 		    e_type, type, e_sys, sys, e_msoc, msoc, msoccp,
+ 		    fgMonotonicPercent(msoc), e_v, vraw, vcp,
+ 		    (unsigned)(((uint64_t)vraw * 122070u) / 1000000u),
+ 		    e_i, iraw & 0xffff,
+ 		    (int)-((int64_t)sraw * 488281u / 1000000u),
+-		    e_usb, usb, e_chg, chg, e_c2, chg2, e_c7, chg7);
++		    e_usb, usb, e_chg, chg, e_c2, chg2, e_c7, chg7,
++		    e_ap, apsd, fgApsdName(apsd), e_icl, icl, e_pp, path,
++		    e_s5, st5);
+ #else
+ 		/* One-shot register probe with per-field errors: any poll failure
+ 		 * after this is attributable to data, not to a dead read path. */
+@@ -497,7 +613,11 @@
+ 		if (fLoop && fTimer && fLoop->addEventSource(fTimer) == kIOReturnSuccess) {
+ 			fTimerAdded = true;
+ 			fRunning = true;
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++			fTimer->setTimeoutMS(5000);
++#else
+ 			fTimer->setTimeoutMS(30000);
++#endif
+ 		} else {
+ 			fReal = false;
+ 			poll();
