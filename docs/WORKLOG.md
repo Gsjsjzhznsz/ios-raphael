@@ -471,3 +471,25 @@ Stage Summary:
 **自动亮度定性**：ALS → CoreBrightness → **同一条 sel 50**。t22 修通 sel 50 = 自动亮度的执行端就绪；缺的是 ALS 传感器数据（I2C 光感驱动 + AppleALS HID 事件）→ 下一轮任务（MiCode raphael-p-oss dtsi 定芯片型号）。
 
 **下一轮判决点**：①启动行 `DSI ctrl0/ctrl1 probe ok`（谁宿主）；②拖滑条 `sel 50 (NNNN)` → `brightness NNN` 行 + 屏幕是否跟随；③插电 ≤5s 闪电 + `registering as AppleSmartBattery`。
+
+---
+
+## Task 34 (r33/t23) — 触摸冷启动重试阶梯（GT9886 PID 垃圾值破案）（2026-10-22）
+
+**输入**：用户回报"怎么无法触碰了"+ 新 sweet-log.bin（t22 实测，3102 行）。
+
+**t22 日志判决（触摸回归的完整因果链）**：
+1. **IC 完全活着**：`probe xfer addr=0x5d` 全部 err=0（ACK + 时钟拉伸 stretch=1，72 字节配置块读回成功）——I2C/GCC/TLMM/SE 全链健康。
+2. **但 RAM 镜像是垃圾**：PID `[22 50 96 ba]`（正常 ASCII "9886"）+ 72 字节版本块 sum=0x8a（厂商保证 0）+ sensor id=0x1。PID/版本块都活在 IC 的 RAM 里 → **flash 固件没跑起来**。
+3. **根因定性**：0091 冷启动序列 reset 释放后仅等 300ms 就探测；芯片 flash 引导输了竞速。概率性事件——t12→t21 十余次开机全部赢了，t22 输了一次。**与 t22 的 0100/0101 无关**（不碰 I2C/QUP/TLMM；亮度 sel 50/battery 行在日志里全部正常工作）。
+4. 顺带战果：0100 亮度通路实机确认（`sel 50 in (10000)` → `brightness 2047`，亮屏补发生效）；0101 判决行 `registering as AppleSmartBattery` 在场，用户本轮未再报充电缺失。
+
+**0102**：PID 校验失败不再直接 `goto out`，改为冷启动重试阶梯——
+- try0：原时序（100ms 断电/20ms 稳定/2ms reset 低/300ms 引导窗）不变；
+- try1：200ms 断电 / 50ms 稳定 / 10ms reset 低 / 500ms 引导窗；
+- try2：300ms 断电 / 100ms 稳定 / 10ms reset 低 / 500ms 引导窗 + **INT 上升沿 strap**（reset 拉低期把 IRQ 配输出高，释放后 1ms 交还输入——经典 Goodix 引导选择带，先于芯片固件驱动该线）；
+- 每档判决行 `SWEET TOUCH: retry N cold cycle off=… settle=… low=… boot=… ms` + `GT9886 tryN pid err=… [..] sensor… sum=…`；任一档 PID 变对即继续原 bring-up（doze disable → cfg 784B → 0x4100 轮询）；三败才停（新文案 `pid is not 9886 after 3 cold boots`），日志留全证据。
+
+**工程**：sweet_touch.c 终态重建 = 0060(创建)→0062→0063→0083→0086→0088→0089→0091→0093→0094 十补丁链回放（1162 行零 FAIL，6 锚点全中；幻影段尾空行/\ No newline 元数据解析修复）；0102 双向验证（git apply --check --reverse + patch -p1 应用结果与手改版逐字节一致）；t23 构建自检（t22 字节级复现）。
+
+**下一轮判决点**：①`GT9886 tryN` 任一档 PID 变对 + 实机触摸恢复（全胜）；②三败（固件升级路径：OrangeFox 从 MIUI vendor 提取 goodix 固件）；③亮度/充电回归确认（本轮零改动）。
