@@ -35,7 +35,7 @@ index 047a453..a8a402f 100644
  		return -1;
  	}
 diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
-index e561cb8..3dbc5da 100644
+index e561cb8..2ebf60b 100644
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
 @@ -66,6 +66,7 @@ static const struct {
@@ -74,7 +74,7 @@ index e561cb8..3dbc5da 100644
 +		    ((poff & 0x2) ? "PS_HOLD warm reset (EL3/AOP-issued)" :
 +		    ((poff & 0x1) ? "SOFT reset (kernel/AOP-issued)" :
 +		    ((poff & 0x4) ? "PMIC watchdog" :
-+		    (((f1 | f2) ? "PMIC fault" :
++		    ((f1 | f2) ? "PMIC fault" :
 +		    ((offr & 0x20) ? "S3 reset chain" : "normal power-on")))));
 +		printf("SWEET RST: subtype=%#x poff1=%#x off=%#x warm=%#x fault=%#x/%#x s3=%#x -> %s\n",
 +		    sub, poff, offr, warm, f1, f2, s3, cls);
