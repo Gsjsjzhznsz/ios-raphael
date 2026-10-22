@@ -427,3 +427,24 @@ Work Log:
 Stage Summary:
 - t20 = 0001-0096 + 0097-sweetscale；功能首次上真机，判决 = 锁屏顶角时间/电量完整 + 启动行 `(scaled)` + Display Zoom 有视觉变化
 - 教训双档：①CI"沉默跳过"防闸继续救命（本轮是 runner 池故障三连，第 4 次尝试通过）；②终端显示会吞 "[m"（ANSI 伪影），字节级判断必须 od -c，勿凭 grep/cat 改工作流
+
+---
+Task ID: 32
+Agent: Z.ai (main, 接替 GLM 5.3 继续维护)
+Task: 用户指令"把亮度/息屏和电池充电状态修复一下" —— 恢复 t14 时代被回退的 0098 亮度/即时息屏子集 + 0097 充电监视子集，发布为 t21/r31
+
+Work Log:
+- 考古（5e53979 = r22/t14 提交）：取出历史 0097-raphael-battery-charging（214 行）与 0098-raphael-display-scale-brightness（476 行）；0098 的缩放子集已在 t20 作为新 0097 回归，本轮取余下全部：DSI ctrl0 DCS 路径（0x51 亮度 11 位大端 ≤2047 / 0x28-0x29 息屏点亮）、即时息屏（RequestPowerChange(0) 一次 memset + 面板真睡眠，sweetfb_fade=1 回旧渐暗）、sweetfb_bright= 启动档位、setProperties 亮度钩子、externalMethod 标量日志。
+- 补丁重建法：从创建补丁（0046/0062）提取 pristine 文件，按序回放链条到当前树（FB: 0054,0056,0061,0067,0079,0097；BATT: 0092,0095,0096），历史补丁 dry-run 定位冲突（FB 11 hunks 中 5 个撞 0097 已有内容；BATT 干净全过）；FB 剔除缩放 hunks 后其余照抄，hunk-7 的 IOLog 尾巴与 0097 冲突 → DSI init 部分手工移植。
+- 两处超出历史补丁的强化（NOTES 存档）：① IOUserClient::setProperties 基类不转发（Apple 自家 IOHIDEventServiceUserClient 手动转发 _owner 为证），历史钩子只挂 AppleCLCD 永远够不到 → IOMobileFramebufferUserClient::setProperties 转发 fFB；② 历史 0097 的 inputCheck 抢先更新 fLastPlugin/fLastChgState，poll() 的转移日志块比较恒等 → 插拔一行 dump 永不触发，本版 inputCheck 只比较不缓存。首版曾加 sel12 探针，CI 编译失败实证 kSweetFBRequestPowerChange == 12（用户日志 boot 后的 "sel 12 in 1/0" 即 display-on）→ 探针删除，日志门升级为每 selector 前 3 次 + 标量值（亮度通路猎取）。
+- 全链回放验证：99 补丁（0001-0097 + 新 0098/0099）对 pristine 双文件零 FAIL，最终文件与手改版逐字节一致。
+- CI：push 9f3bdfe 首轮编译失败（duplicate case 12）→ d13299c 修复后 run 39788229692 success；kernel.development.raphael 17,223,216B（cdd15b5b…）；LC_DYLD_CHAINED_FIXUPS 实测不存在 → fixups=0 属实（新工具链无 chained fixups，t20 同）。
+- 金标准材料：r30 Release t20-clean（e32618b9…，objects.githubusercontent 单线程 ~90B/s 不可用，改 API octet-stream + 12 并行 1MiB 分段 25s/17MB）逐字节校验后抽取 shim(9fbe8fb8)/DTB(2a1ec87b)/ADT(f50510e0,12588B)/cmdline(330B 逐字)；shim+DTB 与 diag5 提取件全等（Task 27/28 档案吻合）。CI artifact 60MB 走 Azure blob 签名 URL 25s 下完（release 资产限速、artifact 不限速）。
+- 构建（t21_build.py）：自检模式用 t20 自身四件重组 = 逐字节复现（装配器证明）；正式构建六重校验全过（payload 魔数/nsegs=10/virt+entry 同基址/phys=0x1_00000000 mem=0xFCC00000/ADT 内嵌逐字节/cmdline 逐字/标记 14 项在场 + 9 项 USB 轮缺席判别串全缺席/头页仅 ramdisk_size 4 字节差/debug 恰 1 字节 @0x33172）。clean 312259a1… / debug e7f19586…（17,342,575B）。
+- 文档：FLASH-T21.md（判读树：A 显示 DCS 判决行 + 即时息屏表 / B 亮度滑条三通路判读 / C 充电 5s + 转移行全表 / D-G 回归与取证 / H 回退）；README 双语（状态行 ×2、下载表 ×2、哈希块）；本 WORKLOG。
+- 发布：raphael-touch-r31（make_latest=false，r28 保持 Latest）；4 资产（clean/debug/FLASH-T21.md/T21-SHA256SUMS.txt）。
+
+Stage Summary:
+- t21 = t20 底座 + 0098（亮度 DCS/即时息屏/setProperties+userclient 转发/前3次标量日志）+ 0099（5s 充电输入监视/插拔转移全dump/inputCheck 缓存 bug 修复）
+- 亮度滑条本轮目标 = 通路识别（setProperties 或 externalMethod 某 selector，日志必留痕）；息屏目标 = 瞬时全黑 + AMOLED 真睡眠；充电目标 = 插拔 ≤5s 状态栏出闪电
+- 教训：①生成补丁一律 diff -u（漏 -u 出 ed 格式）；②Edit 工具会整体展开 tab——补丁链源文件编辑必须用 python 字节级替换；③标记判别串必须先对基础链验纯（GUSB2PHYCFG/QSCRATCH 等在 0074 基础 USB 补丁里就有）；④kSweetFBRequestPowerChange==12，别把 display-on 的 sel12 当亮度
