@@ -1,0 +1,189 @@
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index 047a453..a8a402f 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -128,16 +128,25 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ 	/* Restrict access to the battery blocks; keys retain their own lanes. */
+ 	unsigned peripheral = addr >> 8;
+ 	bool allowed = false;
+-	if (!sp_ready || !out || sid != SP_BATT_SID || addr > 0xffffu) {
++	if (!sp_ready || !out || addr > 0xffffu) {
+ 		return -1;
+ 	}
+-	for (unsigned i = 0; i < sizeof(sp_periph_ok) / sizeof(sp_periph_ok[0]);
+-	    ++i) {
+-		if (peripheral == sp_periph_ok[i]) {
+-			allowed = true;
+-			break;
++	if (sid == SP_BATT_SID) {
++		for (unsigned i = 0; i < sizeof(sp_periph_ok) / sizeof(sp_periph_ok[0]);
++		    ++i) {
++			if (peripheral == sp_periph_ok[i]) {
++				allowed = true;
++				break;
++			}
+ 		}
+ 	}
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++	/* 0104: read-only PON reset-reason classifier (PM8150 sid 0,
++	 * peripheral 0x8) for the USB probe. Keys retain their own lanes. */
++	if (sid == 0 && peripheral == 0x08) {
++		allowed = true;
++	}
++#endif
+ 	if (!allowed) {
+ 		return -1;
+ 	}
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index e561cb8..3dbc5da 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -66,6 +66,7 @@ static const struct {
+ 	{ "cfg-noc-axi", 0x0f078 },
+ 	{ "aggre-axi", 0x0f07c },
+ 	{ "phy-ref", 0x8c028 },
++	{ "ahb2phy", 0x6a004 },
+ };
+ #else
+ static const struct {
+@@ -117,6 +118,36 @@ sweet_usb_probe(void)
+ 	if (!enabled) {
+ 		return;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++	/* 0104: classify the previous reset from the PM8150 PON block (SPMI
++	 * sid 0, peripheral 0x8): POFF_REASON1 bit0 SOFT / bit1 PS_HOLD = an
++	 * EL3/AOP-issued warm reset, bit2 = PMIC watchdog; FAULT/S3 bits =
++	 * PMIC-side chains. imem 0x65c is cleared by ABL every boot, so the
++	 * PON registers are the only authoritative source. Read-only, same
++	 * observer discipline as the battery driver. */
++	{
++		extern int sweet_spmi_init(void);
++		extern int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
++		uint8_t sub = 0, r1 = 0, warm = 0, poff = 0, offr = 0, f1 = 0, f2 = 0, s3 = 0;
++		int ok = sweet_spmi_init() == 0 &&
++		    sweet_spmi_read(0, 0x805, &sub) == 0 &&
++		    sweet_spmi_read(0, 0x8c0, &r1) == 0 &&
++		    sweet_spmi_read(0, 0x8c2, &warm) == 0 &&
++		    sweet_spmi_read(0, 0x8c5, &poff) == 0 &&
++		    sweet_spmi_read(0, 0x8c7, &offr) == 0 &&
++		    sweet_spmi_read(0, 0x8c8, &f1) == 0 &&
++		    sweet_spmi_read(0, 0x8c9, &f2) == 0 &&
++		    sweet_spmi_read(0, 0x8ca, &s3) == 0;
++		const char *cls = !ok ? "PON read unavailable" :
++		    ((poff & 0x2) ? "PS_HOLD warm reset (EL3/AOP-issued)" :
++		    ((poff & 0x1) ? "SOFT reset (kernel/AOP-issued)" :
++		    ((poff & 0x4) ? "PMIC watchdog" :
++		    (((f1 | f2) ? "PMIC fault" :
++		    ((offr & 0x20) ? "S3 reset chain" : "normal power-on")))));
++		printf("SWEET RST: subtype=%#x poff1=%#x off=%#x warm=%#x fault=%#x/%#x s3=%#x -> %s\n",
++		    sub, poff, offr, warm, f1, f2, s3, cls);
++	}
++#endif
+ 	vm_offset_t gcc = ml_io_map(GCC_PA, GCC_SIZE);
+ 	if (gcc == 0) {
+ 		printf("SWEET USB: GCC map failed\n");
+@@ -183,6 +214,8 @@ sweet_usb_probe(void)
+ #define GCTL            0xc110
+ #define GUSB2PHYCFG     0xc200
+ #define GUSB2PHYCFG_SUSPHY (1u << 6)
++#define GUSB3PIPECTL    0xc2c0
++#define GUSB3PIPECTL_SUSPHY (1u << 17)
+ #define GEVNTADRLO      0xc400
+ #define GEVNTADRHI      0xc404
+ #define GEVNTSIZ        0xc408
+@@ -920,6 +953,19 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	}
+ 	printf("SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x (SUSPHY cleared)\n",
+ 	    phycfg, dwc_rd(GUSB2PHYCFG));
++	/* 0104: GUSB3PIPECTL.SUSPHY (bit 17) must also be cleared before
++	 * endpoint commands on Qualcomm DWC31 targets - a leftover set bit
++	 * makes register writes fail and crash the system (Qualcomm commit
++	 * 9bdbd5286ea5; mainline wires dis_u3_susphy_quirk on sm8150). The
++	 * t16 round wedged on the first DEPCMD write with no femto code at
++	 * all, matching this never-cleared bit. */
++	uint32_t pipectl = dwc_rd(GUSB3PIPECTL);
++	if (pipectl & GUSB3PIPECTL_SUSPHY) {
++		dwc_wr(GUSB3PIPECTL, pipectl & ~GUSB3PIPECTL_SUSPHY);
++		delay(10000);	/* 10 ms */
++	}
++	printf("SWEET USB: GUSB3PIPECTL 0x%08x -> 0x%08x (U3 SUSPHY cleared)\n",
++	    pipectl, dwc_rd(GUSB3PIPECTL));
+ #endif
+ 
+ #if defined(ARM64_BOARD_CONFIG_RAPHAEL)
+@@ -937,6 +983,28 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	vm_offset_t hsphy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
+ 	vm_offset_t gccb = ml_io_map(GCC_PA, GCC_SIZE);
+ 	if (hsphy != 0 && gccb != 0) {
++		/* 0104: the AHB-to-PHY bridge branch. raphael's own GCC has
++		 * gcc_usb_phy_cfg_ahb2phy_clk at 0x6a004 (raphael-p-oss
++		 * gcc-sdmmagpie.c); sm7150 gates its QUSB2 register file on the
++		 * same branch. t17/t18 read every femto register back as one
++		 * byte replicated x4 (REFCLK was written 0x2, read 0x02020202)
++		 * - a degraded-bridge signature, not an unpowered rail: the 0103
++		 * votes completed against the correct rails (pm8150 l5/l12/l2 per
++		 * the raphael board dtsi) yet no write ever stuck. Enable the
++		 * branch if ABL left it gated. */
++		uint32_t ahb = usb_rd(gccb, 0x6a004);
++		if (ahb & CBCR_CLK_OFF) {
++			*(volatile uint32_t *)(gccb + 0x6a004) = ahb | 1u;
++			for (unsigned i = 0; i < 100; i++) {
++				delay(1);
++				ahb = usb_rd(gccb, 0x6a004);
++				if (!(ahb & CBCR_CLK_OFF)) {
++					break;
++				}
++			}
++		}
++		printf("SWEET USB: ahb2phy CBCR 0x%08x (%s)\n", ahb,
++		    (ahb & CBCR_CLK_OFF) ? "STUCK OFF" : "on");
+ 		printf("SWEET USB: hsphy pre-state COMMON0 0x%08x CTRL2 0x%08x CTRL5 0x%08x CFG0 0x%08x\n",
+ 		    usb_rd(hsphy, 0x54), usb_rd(hsphy, 0x64), usb_rd(hsphy, 0x50), usb_rd(hsphy, 0x94));
+ 		/* 0103: Linux qcom_snps_hsphy_init() enables vdda-pll/vdda33/vdda18
+@@ -963,8 +1031,17 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 			printf("SWEET USB: hsphy LDO vote failed; gadget start aborted before PHY reset (no ep0 wedge)\n");
+ 			return;
+ 		}
+-		/* GCC_QUSB2PHY_PRIM_BCR 0x12000 (gcc-sm8150.c): assert >= 100 us,
+-		 * then release - resets all PHY registers to default state. */
++		/* 0104: GCC_QUSB2PHY_PRIM_BCR. raphael's own kernel places it
++		 * at 0x26000 (raphael-p-oss gcc-sdmmagpie.c reset table; every
++		 * other USB/PCIe/UFS reset matches mainline, only this one
++		 * differs - mainline's 0x12000 does not exist in raphael's GCC
++		 * map and t17/t18 pulsed a no-op, so the PHY never reset).
++		 * Assert >= 100 us, then release - resets all PHY registers to
++		 * default state. Pulse the authoritative offset first, keep
++		 * mainline's as a secondary (proven harmless in t17/t18). */
++		*(volatile uint32_t *)(gccb + 0x26000) = 1;
++		delay(150);
++		*(volatile uint32_t *)(gccb + 0x26000) = 0;
+ 		*(volatile uint32_t *)(gccb + 0x12000) = 1;
+ 		delay(150);
+ 		*(volatile uint32_t *)(gccb + 0x12000) = 0;
+@@ -987,8 +1064,24 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 		usb_phy_wr_mask(hsphy, 0x50, 1u << 1, 0);		/* UTMI_CTRL5: POR=0 (release) */
+ 		usb_phy_wr_mask(hsphy, 0x64, 1u << 3, 0);		/* CTRL2: SUSPEND_N_SEL=0 */
+ 		usb_phy_wr_mask(hsphy, 0x94, 1u << 1, 0);		/* CFG0: CMN override off */
++		/* 0104: PMIC5 rails and the PHY POR need time to settle before
++		 * the readback can mean anything. */
++		delay(20000);	/* 20 ms */
++		uint32_t femto_c1 = usb_rd(hsphy, 0x58), femto_rc = usb_rd(hsphy, 0xa0);
+ 		printf("SWEET USB: hsphy up (femto): COMMON0 0x%08x COMMON1 0x%08x CTRL2 0x%08x REFCLK 0x%08x\n",
+-		    usb_rd(hsphy, 0x54), usb_rd(hsphy, 0x58), usb_rd(hsphy, 0x64), usb_rd(hsphy, 0xa0));
++		    usb_rd(hsphy, 0x54), femto_c1, usb_rd(hsphy, 0x64), femto_rc);
++		/* 0104: a byte-replicated or zero readback means the register
++		 * file is still degraded - abort BEFORE the endpoint commands.
++		 * The ep0 command WRITE on a dead PHY wedges the boot CPU on the
++		 * AXI bus; the failure must stay a stable lock screen + photo, not
++		 * the 45 s reboot loop (the touch thread escalates the wedged
++		 * config-NoC into a warm reset). */
++		if (femto_c1 == 0 || femto_rc == 0 ||
++		    femto_c1 == ((femto_c1 & 0xffu) * 0x01010101u) ||
++		    femto_rc == ((femto_rc & 0xffu) * 0x01010101u)) {
++			printf("SWEET USB: hsphy register file degraded after BCR+rails; gadget start aborted before ep0 (no wedge)\n");
++			return;
++		}
+ 	}
+ #endif
+ 
