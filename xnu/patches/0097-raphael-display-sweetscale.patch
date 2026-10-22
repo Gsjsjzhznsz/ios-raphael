@@ -1,0 +1,200 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -74,9 +74,12 @@
+  * The iOS userland only has status bar / layout data for real iPhone
+  * screens (UIKit: "No status bar visual provider for screen", the red
+  * rdar://45025538 bar for 360x800 points). The display is therefore
+- * presented as the iPhone X panel, 1125x2436 (375x812 points @3x), and the
+- * centered 1080x2400 part of it is shown on the 1080x2400 panel.
+- * Boot-arg sweetfb_native=1 presents the real panel size instead.
++ * presented as the iPhone X panel, 1125x2436 (375x812 points @3x), and
++ * CoreAnimation's logical frame is SCALED to the physical panel with
++ * nearest-neighbour tables (one source column per panel column and one
++ * source row per panel row), so nothing is cropped off. Boot-arg
++ * sweetscale=0 restores the old centered-crop behaviour; sweetfb_native=1
++ * presents the real panel size instead (no scaling, but no iPhone layout).
+  */
+ #define SWEET_FB_LOGICAL_W              1125
+ #define SWEET_FB_LOGICAL_H              2436
+@@ -104,6 +107,9 @@
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+ 	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
+ 	int32_t       fOffX, fOffY;             /* logical origin of the panel */
++	bool          fScaling;                 /* scale logical frame to panel */
++	int32_t      *fColMap;                  /* panel column -> logical column */
++	int32_t      *fRowMap;                  /* panel row -> logical row */
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
+ 	IOMemoryMap  *fMap;
+ 	SweetSurface *fSurface;         /* the panel memory as an IOSurface */
+@@ -176,6 +182,39 @@
+ 	}
+ 	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
+ 	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	fScaling = false;
++	fColMap = fRowMap = NULL;
++	if (fLogicalW != fWidth || fLogicalH != fHeight) {
++		int scale = 1;
++		PE_parse_boot_argn("sweetscale", &scale, sizeof(scale));
++		if (scale != 0) {
++			fColMap = (int32_t *)IOMalloc(fWidth * sizeof(int32_t));
++			fRowMap = (int32_t *)IOMalloc(fHeight * sizeof(int32_t));
++			if (fColMap != NULL && fRowMap != NULL) {
++				fScaling = true;
++				/* Nearest-neighbour maps: the logical pixel shown on each
++				 * panel pixel, centres aligned:
++				 * src = (p * logical + panel / 2) / panel. */
++				for (uint32_t x = 0; x < fWidth; x++) {
++					fColMap[x] = (int32_t)(((uint64_t)x *
++					    fLogicalW + fWidth / 2) / fWidth);
++				}
++				for (uint32_t y = 0; y < fHeight; y++) {
++					fRowMap[y] = (int32_t)(((uint64_t)y *
++					    fLogicalH + fHeight / 2) / fHeight);
++				}
++			} else {
++				if (fColMap != NULL) {
++					IOFree(fColMap, fWidth * sizeof(int32_t));
++					fColMap = NULL;
++				}
++				if (fRowMap != NULL) {
++					IOFree(fRowMap, fHeight * sizeof(int32_t));
++					fRowMap = NULL;
++				}
++			}
++		}
++	}
+ 	fLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+@@ -201,8 +240,9 @@
+ 	setProperty("external", false);
+ 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
+ 	registerService();
+-	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+-	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
++	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u%s\n",
++	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH,
++	    fScaling ? " (scaled)" : "");
+ 	return true;
+ }
+ 
+@@ -359,42 +399,94 @@
+ 		if (dx < 0 || dy < 0) {
+ 			dx = dy = 0;
+ 		}
+-		/* Logical (presented) display coordinates -> panel coordinates. */
+-		dx -= fOffX;
+-		dy -= fOffY;
+-		if (dx < 0) {
+-			sx -= dx;
+-			w += dx;
+-			dx = 0;
+-		}
+-		if (dy < 0) {
+-			sy -= dy;
+-			h += dy;
+-			dy = 0;
+-		}
++		/* Source rect stays in surface coordinates, clamped to it. */
+ 		if (w > (int32_t)s->width - sx) {
+ 			w = (int32_t)s->width - sx;
+ 		}
+ 		if (h > (int32_t)s->height - sy) {
+ 			h = (int32_t)s->height - sy;
+ 		}
+-		if (w > (int32_t)fWidth - dx) {
+-			w = (int32_t)fWidth - dx;
+-		}
+-		if (h > (int32_t)fHeight - dy) {
+-			h = (int32_t)fHeight - dy;
+-		}
+ 		uint64_t last = (uint64_t)s->offset + (uint64_t)(sy + h - 1) * s->bytesPerRow +
+ 		    (uint64_t)(sx + w) * 4;
+ 		if (w <= 0 || h <= 0 || s->elementWidth != 1 || s->elementHeight != 1 ||
+ 		    s->memory == NULL || last > s->memory->getLength()) {
+ 			src = 0;
+ 		}
+-		if (src != 0 && bpe == 4) {
+-			for (int32_t y = 0; y < h; y++) {
+-				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+-				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+-				    (size_t)w * 4);
++		if (src != 0 && bpe == 4 && fScaling) {
++			/* Scale the logical dest rect onto the panel: each panel
++			 * pixel samples the logical pixel its centre falls on (the
++			 * per-pixel maps were built in start()). */
++			int32_t x0 = (int32_t)(((uint64_t)dx * fWidth +
++			    fLogicalW / 2) / fLogicalW);
++			int32_t y0 = (int32_t)(((uint64_t)dy * fHeight +
++			    fLogicalH / 2) / fLogicalH);
++			int32_t x1 = (int32_t)(((uint64_t)(dx + w) * fWidth +
++			    fLogicalW / 2) / fLogicalW);
++			int32_t y1 = (int32_t)(((uint64_t)(dy + h) * fHeight +
++			    fLogicalH / 2) / fLogicalH);
++			if (x0 < 0) {
++				x0 = 0;
++			}
++			if (y0 < 0) {
++				y0 = 0;
++			}
++			if (x1 > (int32_t)fWidth) {
++				x1 = (int32_t)fWidth;
++			}
++			if (y1 > (int32_t)fHeight) {
++				y1 = (int32_t)fHeight;
++			}
++			for (int32_t py = y0; py < y1; py++) {
++				int32_t ly = fRowMap[py] - dy;
++				if (ly < 0) {
++					ly = 0;
++				}
++				if (ly >= h) {
++					ly = h - 1;
++				}
++				uint32_t *dstRow = (uint32_t *)(fPixels +
++				    (uint64_t)py * fRowBytes);
++				const uint32_t *srcRow = (const uint32_t *)(src +
++				    s->offset + (uint64_t)(sy + ly) * s->bytesPerRow +
++				    (uint64_t)sx * 4);
++				for (int32_t px = x0; px < x1; px++) {
++					int32_t lx = fColMap[px] - dx;
++					if (lx < 0) {
++						lx = 0;
++					}
++					if (lx >= w) {
++						lx = w - 1;
++					}
++					dstRow[px] = srcRow[lx];
++				}
++			}
++		} else if (src != 0 && bpe == 4) {
++			/* Centered crop (sweetscale=0): show the panel-sized
++			 * window of the logical frame. */
++			dx -= fOffX;
++			dy -= fOffY;
++			if (dx < 0) {
++				sx -= dx;
++				w += dx;
++				dx = 0;
++			}
++			if (dy < 0) {
++				sy -= dy;
++				h += dy;
++				dy = 0;
++			}
++			if (w > (int32_t)fWidth - dx) {
++				w = (int32_t)fWidth - dx;
++			}
++			if (h > (int32_t)fHeight - dy) {
++				h = (int32_t)fHeight - dy;
++			}
++			if (w > 0 && h > 0) {
++				for (int32_t y = 0; y < h; y++) {
++					memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
++					    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
++					    (size_t)w * 4);
++				}
+ 			}
+ 		}
+ 		s->release();
