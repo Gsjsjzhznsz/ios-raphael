@@ -340,3 +340,22 @@ Stage Summary:
 - t13 判决：`probe type=0/0xd sys=0/0x0 msoc=0/0xXX,0xXX(NN%)`（两值相等=影子过）+ 锁屏不再恒 100% + 插线闪电 → 全胜；百分比冻结但电压动 → 下轮 fg-memif 电池 profile
 - 工程加固：补丁必须对 CI buildtree 规范基生成；CI 对板级补丁跳过即红
 - 彩蛋已备料：升降摄像头马达全协议在案（NOTES.md）
+
+---
+Task ID: 27
+Agent: Z.ai (main)
+Task: t13 重建版真机不亮屏 → 根因定位（v1 头打包错误）→ 用户已知良好 t12 接替 t7（r15）稳定发行版地位（r28）
+
+Work Log:
+- t13 重建版/ t19 双双黑屏的根因（镜像解剖三重对照）：用户正常 t12 与 t17 上传镜像均为 **boot header v2**（DTB 独立段，dtb_addr=0x1F00000），而我用 package-raphael.py 打包的 t19/t13 均为 **v1**（DTB 拼进 kernel 段）——diag 轮早已实证"v2 头 = 唯一被 ABL 接受的格式"（v1 下 shim 拿不到独立加载的 DTB，直接黑屏）。教训：打包工具必须与历史可用镜像同构，改打包链前先解剖已知良好样本。
+- 用户 t12 上传件 sha256 3725736f… 与 r20 原版 release 资产逐字节一致；用户亦将该文件直接上传至仓库根（commit ee4d2d1）。
+- "改成 8 核"经三重验证为无需修改：cmdline cpus=8 + ADT 8×kryo485 CPU 节点（cpu0-7）+ t11 真机日志 8/8 CPUs。对已知良好资产零改动 = 最大安全。
+- r28 稳定版构建：clean = 用户 t12 逐字节拷贝（零改动）；debug = 仅 1 字节补丁（payload cmdline sweetfb_noconsole 1→0，v2 结构/shim/DTB/内核全不动），构建脚本断言：源哈希 == r20 记录、全文件恰 1 字节差异、payload 魔数与 t12 身份标记（GT9886/cfg send/DWC3 GSNPSID 在位；fg-gen4/SUSPHY cleared 不在）。
+- 发布 raphael-touch-r28（Latest）：4 资产 api_size 与公网回读 sha256 全等（Task 20 纪律）；删除 r15 release+tag（t7 稳定位由 t12 接替）；发行版 = r28(t12 稳定) + r27(t19, 标注勿刷) + rootfs。
+- README 双语更新：状态表降级 t14~t19 实验功能（显示缩放/亮度/息屏/充电轮询/SPMI 门/USB 全部标注已回退，稳定版不含；电池降为探针读通——fg-gen4 系 t13），下载表 t12 升为当前首刷推荐、t19 标注勿刷（v1 头）、t7 行移除，哈希块补 t12-debug 与勿刷标注。
+- 注：t14~t19 各轮详情见 git 历史（0f84efc..1999311）；仓库树已回退至 t13 基线（a7a925e），稳定镜像为 t12 时代内核（补丁 0001-0095）。
+
+Stage Summary:
+- 稳定发行版 = r28/t12：8 核 + GT9886 触摸闭环 + 电池探针 + v2 头正确打包；clean 与当年实测可用文件逐字节一致
+- v1 头黑屏根因已归档（t13 重建失败、t19 黑屏、乃至 t8 时代"v1 不被接受"三次事故同源）
+- 后续若重启 USB 线：先用 v2 工具链（repack-boot-v2）重打包再谈内核功能

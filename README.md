@@ -8,17 +8,17 @@
 > 本项目为实验性质，操作会**彻底清空手机全部数据**，严禁在主力机上操作！
 > This project is experimental. Flashing **erases all phone data**. Never use your daily driver.
 
-## 📊 当前状态（2026-10-22, r27/t19）
+## 📊 当前状态（2026-10-22）· 稳定版 r28/t12（t14~t19 实验轮已废弃回退）
 
 | 子系统 | 状态 | 说明 |
 |---|---|---|
 | 引导链 | ✅ 实测可用 | shim → XNU → iOS 锁屏完整启动（`fastboot boot` 免落盘，重启即回安卓引导） |
 | CPU | ✅ 8 核实测 | `8/8 CPUs initialized`（kryo485 匹配表 + PSCI 二次核拉起） |
-| 显示 | ✅ 点亮 + 缩放修复（t14 引入，t16 起随整机验证） | 原生 1080×2340 面板；iOS 的 1125×2436 画面**整幅缩放**到面板（此前居中裁剪会切掉顶部两角的时间/电量）；`sweetscale=0` 可回退旧行为 |
+| 显示 | ✅ 点亮（稳定版 t12 为居中裁剪模式） | 原生 1080×2340 面板；整幅缩放修复系 t14 实验功能（已随回退移除），稳定版下 iOS 的 1125×2436 画面居中裁剪，顶部两角的时间/电量会被切掉 |
 | 触摸 | ✅ 实测可用 | GT9886 厂商级 bring-up：真寄存器图 + 784 字节面板配置下发（双供应商）+ doze 控制 |
-| 电池 | ✅ 真实读数 | fg-gen4 硬件电量计：真 SOC/电压/电流（影子校验）+ 低电警告 + 时间剩余；**t14 新增充电状态 5 秒快轮询 + 插拔即日志**（APSD 充电器类型 / 输入限流 / 电源路径全落盘） |
-| 亮度 / 息屏 | 🔧 t14 引入（待实测） | DSI DCS 亮度通道（`sweetfb_bright=` 初始亮度，iOS 滑条联动下一轮接入）+ **息屏立即全黑**（面板清屏 + DCS 0x28，替代旧的多步渐暗，`sweetfb_fade=1` 可回退）；t14/t15 都死在 USB 阶段，这些功能随 t16 首测 |
-| USB | 🔧 t19 三项硬件级修复（待实测）：源码深挖+官方源裁决推翻 t18 判读——①"字节复制×4"读值（REFCLK 写 0x2 读回 0x02020202）是 **AHB2PHY 桥（0x6a004）访问降级**特征，非轨未上电（0103 三票经 raphael 官方板级 dtsi 验证对象/电压/编码全对）；②**QUSB2PHY_PRIM_BCR 真偏移 0x26000**（raphael 官方 GCC 复位表；主线 0x12000 在此硅片不存在，t17/t18 一直在脉冲空气）；③**GUSB3PIPECTL.SUSPHY(0xc2c0 bit17) 从未清除**（Qualcomm 9bdbd5286ea5：遗留=寄存器写失败→整机崩溃；t16 无 femto 也楔死吻合）。控制台几何定案（fbcon 环绕+清屏）：所有照片都是单次启动单次 probe，光标冻在 ep0 print，其后两行空白=从未写过；t16 重读证明 ep0 后系统继续跑完启动——**只楔死 CPU0**，45s 触摸线程撞毒化 NoC → RPM/TZ 热复位 = 40-50s 重启完整因果链。t19：ahb2phy 桥使能 + 双 BCR 脉冲 + U3 SUSPHY 清除 + 20ms settle + **降级中止**（失败=稳定锁屏+照片，45s 重启循环机制性终结）+ `SWEET RST:` PON 复位分类器（SPMI 只读） |
+| 电池 | 🔶 探针读通（稳定版 t12） | PM8150B 读通（probe type=0xd）；fg-gen4 真实读数（SOC/电压/电流）与充电轮询系 t13/t14 实验功能（已随回退移除），稳定版仍为静态读数 |
+| 亮度 / 息屏 | ❌ 稳定版未含 | DSI DCS 亮度通道与息屏立即全黑系 t14 实验功能（已随回退移除），稳定版为多步渐暗 |
+| USB | ⛔ 已废弃（t14~t19 回退，稳定版无 USB） | 实验轮推进至 t19 三项硬件级修复即全线回退（历史细节：源码深挖+官方源裁决推翻 t18 判读——①"字节复制×4"读值（REFCLK 写 0x2 读回 0x02020202）是 **AHB2PHY 桥（0x6a004）访问降级**特征，非轨未上电（0103 三票经 raphael 官方板级 dtsi 验证对象/电压/编码全对）；②**QUSB2PHY_PRIM_BCR 真偏移 0x26000**（raphael 官方 GCC 复位表；主线 0x12000 在此硅片不存在，t17/t18 一直在脉冲空气）；③**GUSB3PIPECTL.SUSPHY(0xc2c0 bit17) 从未清除**（Qualcomm 9bdbd5286ea5：遗留=寄存器写失败→整机崩溃；t16 无 femto 也楔死吻合）。控制台几何定案（fbcon 环绕+清屏）：所有照片都是单次启动单次 probe，光标冻在 ep0 print，其后两行空白=从未写过；t16 重读证明 ep0 后系统继续跑完启动——**只楔死 CPU0**，45s 触摸线程撞毒化 NoC → RPM/TZ 热复位 = 40-50s 重启完整因果链。t19：ahb2phy 桥使能 + 双 BCR 脉冲 + U3 SUSPHY 清除 + 20ms settle + **降级中止**（失败=稳定锁屏+照片，45s 重启循环机制性终结）+ `SWEET RST:` PON 复位分类器（SPMI 只读） |
 | GPU | ❌ 无驱动 | 界面为 CPU 软渲染，滑动卡顿属正常 |
 | Wi-Fi / 蓝牙 / 相机 / 音频 / 传感器 / 基带 | ❌ 未开始 | — |
 
@@ -34,23 +34,24 @@
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-t19-ahb2phy-bcr-clean.img` | **当前首刷推荐（r27）**：修复 femto 寄存器堆三个硬件级死因（AHB2PHY 桥时钟 0x6a004 / QUSB2PHY_PRIM_BCR 0x26000 / GUSB3PIPECTL.SUSPHY）+ 20ms settle + 降级干净中止（失败=稳定锁屏，不再 45s 重启）+ `SWEET RST:` 上次复位原因分类器 + t18 全部（RPMh 三轨投票/post-LDO 回读/femto 15 步/SUSPHY/金丝雀/DWC31 settle/SPMI 门/显示缩放/即时息屏/亮度通道/充电快轮询） |
-| `raphael-t19-ahb2phy-bcr-debug.img` | r27 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
-| `raphael-t7-touchfix-clean.img` | 回退/对照（SWEET 编译，已知可启动，触摸死） |
+| `raphael-t12-gt9886-clean.img` | **当前首刷推荐（r28 稳定版）**：8 核（cmdline cpus=8 + ADT 8×kryo485）· GT9886 触摸闭环（784B 面板配置下发，实测可用）· 电池探针 · v2 头正确打包 · 逐字节复用实测可用的原 r20 资产（零改动） |
+| `raphael-t12-gt9886-debug.img` | r28 排障版：同 clean 但**屏幕控制台常开**（仅改 1 字节 sweetfb_noconsole=0） |
+| ~~`raphael-t19-ahb2phy-bcr-clean.img`~~ | ⚠️ **勿刷（r27）**：v1 头打包错误（本机 ABL 只接受 v2 头），实测黑屏；USB 供电轮 t14~t19 已全线废弃回退 |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷，**rootfs 无需重刷**，与 t 系列内核通用） |
 
 > 项目内核迭代极快，**每次刷机请务必下载最新版本**。
 > 历史镜像哈希（回退参考）：
 
 ```
-t7-clean:  91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe （回退用，已知可启动）
-t12-clean: 3725736f0773ede73b59a35d1cabddc92decbc58aaa37f8a375fa09d46459c6b （触摸闭环）
-t13-clean: 3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f
+t7-clean:  91abcc1be3bce986606500a8003576d1c01fc31ee9348af9659e75c5583559fe （r15 已删除，稳定位由 t12 接替）
+t12-clean: 3725736f0773ede73b59a35d1cabddc92decbc58aaa37f8a375fa09d46459c6b （r28 稳定版，当前推荐）
+t12-debug: 73f1d0ff7656b2e9ce5b52c7d2f274c33fb811a15142910442a410c4da45f46e
+t13-clean: 3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f （原版资产已失传；重建版 v1 头黑屏勿刷）
 t14-clean: 3374ac69efb17155de6a61792e5753053c25669317bb5464aa5fa284e8da3a3c （USB 挂死，勿刷）
 t18-clean: a16e17250b16f6b253085175922e196ec626f898d2165b7b811a996f69fa29ee
 t18-debug: 6f165dca80db7e34021f3f3b6cb020f5127ee108475cb5a5efe76f2c241dcd91
-t19-clean: 593691d1a168069967581ce8ed62bef3cf39ffeb97f8a3cc802a3589514c1fce
-t19-debug: 6097c99aa6a800d82f3a2ec639d8624557501a3c660ce72755b818c012a99557
+t19-clean: 593691d1a168069967581ce8ed62bef3cf39ffeb97f8a3cc802a3589514c1fce （v1 头打包错误，黑屏，勿刷）
+t19-debug: 6097c99aa6a800d82f3a2ec639d8624557501a3c660ce72755b818c012a99557 （同上，勿刷）
 ```
 
 ---
@@ -165,25 +166,25 @@ adb pull /tmp/sweet-log.bin
 
 > ⚠️ Experimental. Flashing **erases all data** — never on a daily driver. The project only overwrites `userdata`; you can return to Android anytime with MiFlash + the official K20 Pro fastboot package.
 
-## Status (2026-10-22, r27/t19)
+## Status (2026-10-22) — stable r28/t12 (t14–t19 experimental rounds reverted)
 
 - ✅ Boot chain proven on device: shim → XNU → iOS lock screen (`fastboot boot`, nothing permanent)
 - ✅ All 8 cores (`8/8 CPUs initialized`)
-- ✅ Display: native 1080×2340 panel; the 1125×2436 iPhone-X frame is **scaled** to the panel instead of center-cropped (t14; first real test in t16 — t14/t15 both died in USB init before userspace)
+- ✅ Display lit (stable t12 uses center-crop: the 1125×2436 frame is cropped, cutting the top clock/battery corners; the t14 scaling fix was reverted with the USB rounds)
 - ✅ Touch (GT9886 vendor-grade bring-up, confirmed working)
-- ✅ Battery: real fg-gen4 hardware gauge (SOC/voltage/current, shadow-verified) + 5-second charger-input polling with APSD/ICL/power-path transition logging
-- 🔧 Brightness DCS channel (`sweetfb_bright=`) and **instant screen-off** (panel clear + DCS 0x28; `sweetfb_fade=1` restores the old fade) — landed in t14; t14/t15 both died in USB init, first real test in t16
-- 🔧 USB (t19 three hardware-level fixes, pending test): the t18 reading was overturned by source verification — the byte-replicated x4 readbacks (REFCLK written 0x2, read back 0x02020202) are a degraded AHB2PHY-bridge signature, not unpowered rails (the 0103 votes were verified correct against raphael's own board dtsi: pm8150 l5/l12/l2); the real QUSB2PHY_PRIM_BCR is at 0x26000 (raphael's gcc table; mainline's 0x12000 does not exist on this silicon — t17/t18 pulsed a no-op); GUSB3PIPECTL.SUSPHY (0xc2c0 bit 17) was never cleared (Qualcomm 9bdbd5286ea5). Console geometry settled (ring fbcon, cleared at boot): every photo is one boot, one probe; only CPU0 wedges at the first ep0 command and the 45 s touch thread escalates it to a warm reset. t19: enable the ahb2phy branch, dual BCR pulse, clear U3 SUSPHY, 20 ms settle, degraded-readback abort (failure = stable lock screen, never the 45 s reboot loop), plus a `SWEET RST:` PON reset classifier (read-only SPMI)
-- 🔧 SPMI: all observer commands (keys/census/battery) now go through one global gate, Linux-style; GPIO census is opt-in (`sweetcensus=1`)
+- 🔶 Battery probe reads the PM8150B (type=0xd); the fg-gen4 real gauge (SOC/voltage/current) and charger polling were t13/t14 experimental features, reverted — the stable image still reports static values
+- ❌ Not in the stable image: brightness DCS channel and instant screen-off were t14 experimental features (reverted); the stable image keeps the old multi-step fade
+- ⛔ USB: abandoned (t14–t19 reverted; the stable image has no USB gadget). History — the experimental line reached t19's three hardware-level fixes: the t18 reading was overturned by source verification — the byte-replicated x4 readbacks (REFCLK written 0x2, read back 0x02020202) are a degraded AHB2PHY-bridge signature, not unpowered rails (the 0103 votes were verified correct against raphael's own board dtsi: pm8150 l5/l12/l2); the real QUSB2PHY_PRIM_BCR is at 0x26000 (raphael's gcc table; mainline's 0x12000 does not exist on this silicon — t17/t18 pulsed a no-op); GUSB3PIPECTL.SUSPHY (0xc2c0 bit 17) was never cleared (Qualcomm 9bdbd5286ea5). Console geometry settled (ring fbcon, cleared at boot): every photo is one boot, one probe; only CPU0 wedges at the first ep0 command and the 45 s touch thread escalates it to a warm reset. t19: enable the ahb2phy branch, dual BCR pulse, clear U3 SUSPHY, 20 ms settle, degraded-readback abort (failure = stable lock screen, never the 45 s reboot loop), plus a `SWEET RST:` PON reset classifier (read-only SPMI)
+- SPMI command gate and GPIO census were t15 experimental features (reverted); the stable image keeps the pre-gate observer paths
 - ❌ No GPU driver (CPU software rendering, UI is slow), no Wi-Fi/BT/camera/audio/modem yet
 
 ## Downloads (Releases)
 
 | File | Purpose |
 |---|---|
-| `raphael-t19-ahb2phy-bcr-clean.img` | **Recommended (r27)**: fixes the three hardware-level causes of the dead femto register file (AHB2PHY bridge clock 0x6a004, QUSB2PHY_PRIM_BCR 0x26000, GUSB3PIPECTL.SUSPHY) + 20 ms settle + degraded-readback clean abort (failure = stable lock screen, no more 45 s reboots) + `SWEET RST:` previous-reset classifier + all t18 features (RPMh rail votes, post-LDO readback, femto 15-step, SUSPHY, canary, DWC31 settle, SPMI gate, display scaling, instant off, brightness, charger polling) |
-| `raphael-t19-ahb2phy-bcr-debug.img` | Same, with the on-screen console always on (photograph the last lines if it hangs) |
-| `raphael-t7-touchfix-clean.img` | Known-good fallback |
+| `raphael-t12-gt9886-clean.img` | **Recommended (r28 stable)**: 8-core (cpus=8 + 8×kryo485 ADT nodes) · GT9886 touch closed-loop (784-byte panel config, verified on device) · battery probe · byte-identical reuse of the verified r20 asset (zero modification) |
+| `raphael-t12-gt9886-debug.img` | Same, with the on-screen console always on (1-byte cmdline patch) |
+| ~~`raphael-t19-ahb2phy-bcr-clean.img`~~ | ⚠️ **Do NOT flash (r27)**: v1-header packaging bug (this ABL only accepts v2 headers) — black screen; the t14–t19 USB line is fully reverted |
 | `ios16-root.simg.part-00~05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs (16G HFS+ sparse image; no need to re-flash when kernels update) |
 
 ## Flashing Guide
@@ -213,7 +214,7 @@ adb pull /tmp/sweet-log.bin
 - `.github/workflows/build-rootfs.yml` — one-shot iOS rootfs build + release
 - `tools/build-raphael.sh` / `repack-boot-v2.py` / `mkadt.py` / `mkpayload.py` — full packaging chain
 - `tools/sweet-usbnet.sh` — host side of the USB Ethernet gadget + live log
-- Patch series 0001–0098: early console, persistent log ring, USB bring-up, raphael display/touch/battery (0090 kryo485 match, 0093 TLMM-south, 0094 GT9886 config download, 0096 fg-gen4 gauge, 0097 charger input polling, 0098 display scaling + brightness + instant off)
+- Patch series 0001–0096 (repo tree): early console, persistent log ring, USB bring-up, raphael display/touch/battery (0090 kryo485 match, 0093 TLMM-south, 0094 GT9886 config download, 0096 fg-gen4 gauge); experimental 0097–0104 (charger polling, display scaling, USB gadget rounds) were reverted — see git history. The r28 stable image is the t12-era kernel (0001–0095)
 
 ## Credits
 
