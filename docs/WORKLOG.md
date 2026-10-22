@@ -536,3 +536,9 @@ Stage Summary:
 - t19 修复集: 三项硬件死因(桥时钟/BCR 偏移/U3 SUSPHY) + 防护(降级中止) + 取证(PON 分类器); 任何失败模式从"45 秒重启循环"变为"稳定锁屏+照片"
 - 判读树决胜行: ahb2phy CBCR (on) → pre-state 非重复字节 → hsphy up (femto) 回读正常 → ep0 TRB armed → running → 枚举 + ping 192.168.7.2
 - 证据资产: t19-bands 五带转录 / t16-bands 重转录 / ref-raphael-{gcc,usb,board,sm8150-usb} 官方源存档 / ref-vendor-{gcc,femto,usb} / ref-femto-v2.c 主线驱动
+
+发布记录 (Task 24 补): CI 修复一轮(sweet_usb.c:146 一个未闭合括号, run 39701306108 失败 -> a67ad3a 修复)后
+run 39702698137 构建成功; scripts/t19_package.py 六重校验全过(header/shim/DTB/payload 魔数+cmdline/0104 标记串/sha256);
+发布 raphael-touch-r27 (4 资产, api_size 与公网回读 sha256 全等, Task 20 纪律), 删除 r26; 发行版 = r27 + r15(t7) + rootfs。
+t19-clean sha256 593691d1a168069967581ce8ed62bef3cf39ffeb97f8a3cc802a3589514c1fce / t19-debug 6097c99aa6a800d82f3a2ec639d8624557501a3c660ce72755b818c012a99557
+交付件已刷新 download/ (t19 四件套)。
