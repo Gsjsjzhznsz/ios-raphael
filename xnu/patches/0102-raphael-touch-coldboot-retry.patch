@@ -1,0 +1,104 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 81a0947..709369e 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1019,29 +1019,85 @@ touch_thread(void *arg, wait_result_t result)
+          * poisoned every following transfer (t11: probe ok, then every poll
+          * err=5 with DONE and zero RX). */
+         uint8_t pid[4] = {0}, sensor = 0, ver[GT9886_VER_LEN] = {0};
+-        st.probing = true;
+-        int pe = touch_read(0x5d, GT9886_PID_REG, true, pid, 4);
+-        int se = touch_read(0x5d, GT9886_SENSOR_REG, true, &sensor, 1);
+-        int ve = touch_read(0x5d, GT9886_VER_BASE, true, ver, GT9886_VER_LEN);
+-        st.probing = false;
+-        unsigned vsum = 0;
+-        for (unsigned i = 0; i < GT9886_VER_LEN; ++i) {
+-                vsum += ver[i];
++        /* t23/0102 cold-boot retry ladder. t22 evidence: the IC stayed alive
++         * at 0x5d (every xfer err=0, ACK + clock stretch) but PID read
++         * [22 50 96 ba] and the 72-byte version block summed to 0x8a instead
++         * of the vendor-guaranteed 0x00. Both live in the IC's RAM image, so
++         * the flash firmware was not running when we probed: the post-reset
++         * 300 ms window is not always enough (probabilistic - t12..t21 all
++         * brought the panel up, t22 lost the race). On a mismatch redo the
++         * cold power cycle with longer settle windows; the third attempt also
++         * straps INT high across the reset rising edge (classic Goodix boot
++         * strap) before returning the pad to input. Still no fw-update path:
++         * if every attempt reads garbage, stop with the full evidence. */
++        int pe = -1, se = -1, ve = -1;
++        bool id_ok = false;
++        for (unsigned att = 0u; att < 3u && !st.dead; ++att) {
++                if (att) {
++                        unsigned off_ms = (att == 1u) ? 200u : 300u;
++                        unsigned set_ms = (att == 1u) ? 50u : 100u;
++                        unsigned low_ms = 10u;
++                        unsigned boot_ms = 500u;
++                        printf("SWEET TOUCH: retry %u cold cycle off=%u settle=%u "
++                            "low=%u boot=%u ms\n",
++                            att, off_ms, set_ms, low_ms, boot_ms);
++                        touch_gpio(TOUCH_GPIO_RESET, 0, 3, 3, true, false);
++                        touch_gpio(TOUCH_GPIO_VDD, 0, 0, 0, true, false);
++                        touch_gpio(TOUCH_GPIO_AVDD, 0, 0, 0, true, false);
++                        touch_wait(off_ms);
++                        touch_gpio(TOUCH_GPIO_VDD, 0, 0, 0, true, true);
++                        touch_gpio(TOUCH_GPIO_AVDD, 0, 0, 0, true, true);
++                        touch_wait(set_ms);
++                        touch_gpio(TOUCH_GPIO_SDA, 2, 0, 2, false, false);
++                        touch_gpio(TOUCH_GPIO_SCL, 2, 0, 2, false, false);
++                        if (att == 2u) {
++                                /* INT high while reset rises: the IC samples
++                                 * the strap at the reset edge; we let go 1 ms
++                                 * later, before its firmware can drive. */
++                                touch_gpio(TOUCH_GPIO_IRQ, 0, 3, 3, true, true);
++                        }
++                        touch_wait(low_ms);
++                        touch_gpio(TOUCH_GPIO_RESET, 0, 3, 3, true, true);
++                        if (att == 2u) {
++                                touch_wait(1);
++                                touch_gpio(TOUCH_GPIO_IRQ, 0, 3, 3, false, false);
++                        }
++                        touch_wait(boot_ms);
++                }
++                pid[0] = pid[1] = pid[2] = pid[3] = 0;
++                sensor = 0;
++                for (unsigned i = 0; i < GT9886_VER_LEN; ++i) {
++                        ver[i] = 0;
++                }
++                st.probing = true;
++                pe = touch_read(0x5d, GT9886_PID_REG, true, pid, 4);
++                se = touch_read(0x5d, GT9886_SENSOR_REG, true, &sensor, 1);
++                ve = touch_read(0x5d, GT9886_VER_BASE, true, ver, GT9886_VER_LEN);
++                st.probing = false;
++                unsigned vsum = 0;
++                for (unsigned i = 0; i < GT9886_VER_LEN; ++i) {
++                        vsum += ver[i];
++                }
++                printf("SWEET TOUCH: GT9886 try%u pid err=%d [%02x %02x %02x %02x] "
++                    "sensor err=%d id=%#x ver err=%d sum=%#x\n",
++                    att, pe, pid[0], pid[1], pid[2], pid[3], se,
++                    sensor & 0x0fu, ve, vsum & 0xffu);
++                id_ok = !pe && pid[0] == '9' && pid[1] == '8' &&
++                    pid[2] == '8' && pid[3] == '6';
++                if (id_ok) {
++                        break;
++                }
+         }
+-        printf("SWEET TOUCH: GT9886 pid err=%d [%02x %02x %02x %02x] sensor err=%d "
+-            "id=%#x ver err=%d sum=%#x\n",
+-            pe, pid[0], pid[1], pid[2], pid[3], se, sensor & 0x0fu, ve, vsum & 0xffu);
+         if (st.dead) {
+                 printf("SWEET TOUCH: sequencer dead; stopping\n");
+                 goto out;
+         }
+-        bool id_ok = !pe && pid[0] == '9' && pid[1] == '8' &&
+-            pid[2] == '8' && pid[3] == '6';
+         if (!id_ok) {
+                 /* The vendor rejects the cfg package and walks a firmware
+                  * update when the pid mismatches. We have no update path:
+                  * stop with the evidence in the log. */
+-                printf("SWEET TOUCH: pid is not 9886 (fw update path not built); stopping\n");
++                printf("SWEET TOUCH: pid is not 9886 after 3 cold boots "
++                    "(fw update path not built); stopping\n");
+                 goto out;
+         }
+         /* Panel supplier id selects the config package; the DT flips both
