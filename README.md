@@ -8,7 +8,7 @@
 > 本项目为实验性质，操作会**彻底清空手机全部数据**，严禁在主力机上操作！
 > This project is experimental. Flashing **erases all phone data**. Never use your daily driver.
 
-## 📊 当前状态（2026-10-22, r26/t18）
+## 📊 当前状态（2026-10-22, r27/t19）
 
 | 子系统 | 状态 | 说明 |
 |---|---|---|
@@ -18,7 +18,7 @@
 | 触摸 | ✅ 实测可用 | GT9886 厂商级 bring-up：真寄存器图 + 784 字节面板配置下发（双供应商）+ doze 控制 |
 | 电池 | ✅ 真实读数 | fg-gen4 硬件电量计：真 SOC/电压/电流（影子校验）+ 低电警告 + 时间剩余；**t14 新增充电状态 5 秒快轮询 + 插拔即日志**（APSD 充电器类型 / 输入限流 / 电源路径全落盘） |
 | 亮度 / 息屏 | 🔧 t14 引入（待实测） | DSI DCS 亮度通道（`sweetfb_bright=` 初始亮度，iOS 滑条联动下一轮接入）+ **息屏立即全黑**（面板清屏 + DCS 0x28，替代旧的多步渐暗，`sweetfb_fade=1` 可回退）；t14/t15 都死在 USB 阶段，这些功能随 t16 首测 |
-| USB | 🔧 t18 RPMh LDO 投票（待实测） | t17 实测定性（屏幕同时留着两次启动：45 秒复位是热复位、帧缓冲不清、console 续写）：femto 序列**跑完了但回读全是重复字节垃圾**（`COMMON1 0x3b3b3b3b`/`REFCLK 0x02020202`/`CTRL2 0x06666606`）——**PHY 寄存器堆未供电，15 步写全部没粘住**；ep0 命令仍无 UTMI 时钟楔死 CPU（同 t16 死点）；~45s 重启时刻与触摸线程 45 秒倒计时到期**精确吻合**（症状非独立故障）。根因闭环：Linux `qcom_snps_hsphy_init()` **第一行就是 `regulator_bulk_enable(vdda-pll/vdda33/vdda18)`**，0102 漏了这一步。t18：复用 SWEET 验证过的 `sweet_rpmh.c` TCS 投票器（raphael apps_rsc 几何逐字相同：drv-id 2、ACTIVE 2/SLEEP 3/WAKE 3、RSC 0x18220000、cmd-db 定位器 0x0c3f000c）在 femto 前投三轨（全 HPM，mainline raphael DTS 接法）：**ldoa2@3072mV / ldoa5@880mV / ldoa12@1800mV**；新增 `hsphy post-LDO` 回读打印 + **投票失败干净中止**（不再让 ep0 写楔死 CPU → 失败模式从 45 秒重启循环变成稳定锁屏+拍照定位） |
+| USB | 🔧 t19 三项硬件级修复（待实测）：源码深挖+官方源裁决推翻 t18 判读——①"字节复制×4"读值（REFCLK 写 0x2 读回 0x02020202）是 **AHB2PHY 桥（0x6a004）访问降级**特征，非轨未上电（0103 三票经 raphael 官方板级 dtsi 验证对象/电压/编码全对）；②**QUSB2PHY_PRIM_BCR 真偏移 0x26000**（raphael 官方 GCC 复位表；主线 0x12000 在此硅片不存在，t17/t18 一直在脉冲空气）；③**GUSB3PIPECTL.SUSPHY(0xc2c0 bit17) 从未清除**（Qualcomm 9bdbd5286ea5：遗留=寄存器写失败→整机崩溃；t16 无 femto 也楔死吻合）。控制台几何定案（fbcon 环绕+清屏）：所有照片都是单次启动单次 probe，光标冻在 ep0 print，其后两行空白=从未写过；t16 重读证明 ep0 后系统继续跑完启动——**只楔死 CPU0**，45s 触摸线程撞毒化 NoC → RPM/TZ 热复位 = 40-50s 重启完整因果链。t19：ahb2phy 桥使能 + 双 BCR 脉冲 + U3 SUSPHY 清除 + 20ms settle + **降级中止**（失败=稳定锁屏+照片，45s 重启循环机制性终结）+ `SWEET RST:` PON 复位分类器（SPMI 只读） |
 | GPU | ❌ 无驱动 | 界面为 CPU 软渲染，滑动卡顿属正常 |
 | Wi-Fi / 蓝牙 / 相机 / 音频 / 传感器 / 基带 | ❌ 未开始 | — |
 
@@ -34,8 +34,8 @@
 
 | 文件 | 说明 |
 |---|---|
-| `raphael-t18-rpmhldo-clean.img` | **当前首刷推荐（r26）**：femto 前投三根 PHY 模拟供电轨（RPMh ldoa2/ldoa5/ldoa12，Linux 顺序）+ post-LDO 回读 + 失败干净中止 + t17 全部（femto 15 步/SUSPHY/金丝雀/DWC31 settle/SPMI 门/显示缩放/即时息屏/亮度通道/充电快轮询） |
-| `raphael-t18-rpmhldo-debug.img` | r26 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
+| `raphael-t19-ahb2phy-bcr-clean.img` | **当前首刷推荐（r27）**：修复 femto 寄存器堆三个硬件级死因（AHB2PHY 桥时钟 0x6a004 / QUSB2PHY_PRIM_BCR 0x26000 / GUSB3PIPECTL.SUSPHY）+ 20ms settle + 降级干净中止（失败=稳定锁屏，不再 45s 重启）+ `SWEET RST:` 上次复位原因分类器 + t18 全部（RPMh 三轨投票/post-LDO 回读/femto 15 步/SUSPHY/金丝雀/DWC31 settle/SPMI 门/显示缩放/即时息屏/亮度通道/充电快轮询） |
+| `raphael-t19-ahb2phy-bcr-debug.img` | r27 排障版：同 clean 但**屏幕控制台常开**（卡住拍最后几行即可定位） |
 | `raphael-t7-touchfix-clean.img` | 回退/对照（SWEET 编译，已知可启动，触摸死） |
 | `ios16-root.simg.part-00 ~ 05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs（16G HFS+ 稀疏镜像分卷，**rootfs 无需重刷**，与 t 系列内核通用） |
 
@@ -49,6 +49,8 @@ t13-clean: 3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f
 t14-clean: 3374ac69efb17155de6a61792e5753053c25669317bb5464aa5fa284e8da3a3c （USB 挂死，勿刷）
 t18-clean: a16e17250b16f6b253085175922e196ec626f898d2165b7b811a996f69fa29ee
 t18-debug: 6f165dca80db7e34021f3f3b6cb020f5127ee108475cb5a5efe76f2c241dcd91
+t19-clean: (发布后回填)
+t19-debug: (发布后回填)
 ```
 
 ---
@@ -133,7 +135,7 @@ fastboot boot 最新版的-clean镜像.img
 
 - 注意：引导后需等待 **4-8 分钟**，屏幕会出现 iOS 锁屏界面。只要机身微热，绝对不要提前强制重启。
 - 由于无 GPU 驱动，界面基于 CPU 软渲染，滑动会卡顿（正常现象）。触摸已适配（如个别批次失灵请回报日志）。
-- t18 预期：屏幕依次打出 `SWEET RPMH: ldoa2/ldoa5/ldoa12 ...` 三票 → `hsphy post-LDO`（**值离开重复字节垃圾 = 轨真的上来了**）→ `hsphy up (femto)` 回读正常 → `canary` → `ep0 setup TRB armed` → `running (DSTS...)`；进锁屏后主机（Termux 手机）枚举出 USB 网卡，`ping 192.168.7.2` 通 = **USB 全胜**（45 秒重启应随之消失，触摸线程在健康系统上 45 秒时首测）。**刷前先彻底关机一次**（长按电源 10 秒以上再进 fastboot）。若投票失败：系统会**干净中止** gadget start（不再重启循环），锁屏正常，拍 `SWEET RPMH:` 几行照片即可自分类（资源名 / 继承冲突 / 超时→下轮 SPMI 直写）（判读树见 FLASH-T18）。
+- t19 预期：开机第一行 `SWEET RST:`（分类上一次复位——t18 的 45s 之谜当庭宣判）→ `ahb2phy CBCR ... (on)` → `pre-state` **不再是重复字节** → 三票 → `post-LDO` → `hsphy up (femto)` 回读正常 → `U3 SUSPHY cleared` → `canary` → `ep0 setup TRB armed` → `running`；进锁屏后主机（Termux 手机）枚举 USB 网卡，`ping 192.168.7.2` 通 = **USB 全胜**（45 秒重启应随之消失）。若仍失败：`register file degraded ... aborted` 后**稳定锁屏不再重启**，拍 `ahb2phy`/`pre-state`/`up (femto)` 三行照片即可自分类（判读树见 FLASH-T19）。
 - **USB 实时日志（新）**：电脑端 `sudo tools/sweet-usbnet.sh`（Linux/Mac），脚本会配置 192.168.7.1 并用 `nc -ukl 5140` 接收实时内核日志——以后排查问题不用再进 Recovery。
 
 ---
@@ -163,7 +165,7 @@ adb pull /tmp/sweet-log.bin
 
 > ⚠️ Experimental. Flashing **erases all data** — never on a daily driver. The project only overwrites `userdata`; you can return to Android anytime with MiFlash + the official K20 Pro fastboot package.
 
-## Status (2026-10-22, r26/t18)
+## Status (2026-10-22, r27/t19)
 
 - ✅ Boot chain proven on device: shim → XNU → iOS lock screen (`fastboot boot`, nothing permanent)
 - ✅ All 8 cores (`8/8 CPUs initialized`)
@@ -171,7 +173,7 @@ adb pull /tmp/sweet-log.bin
 - ✅ Touch (GT9886 vendor-grade bring-up, confirmed working)
 - ✅ Battery: real fg-gen4 hardware gauge (SOC/voltage/current, shadow-verified) + 5-second charger-input polling with APSD/ICL/power-path transition logging
 - 🔧 Brightness DCS channel (`sweetfb_bright=`) and **instant screen-off** (panel clear + DCS 0x28; `sweetfb_fade=1` restores the old fade) — landed in t14; t14/t15 both died in USB init, first real test in t16
-- 🔧 USB (t18 RPMh LDO votes, pending test): t17 settled it — the photo held BOTH boots (the 45 s reset is warm; the framebuffer survives and the console resumes at the first free row): the femto sequence RAN but every readback was repeating-byte garbage (`COMMON1 0x3b3b3b3b`, `REFCLK 0x02020202`, `CTRL2 0x06666606`) — the PHY register file is unpowered and no femto write stuck; the ep0 command still had no UTMI clock and wedged a CPU (same death point as t16); the ~45 s reboot coincides exactly with the touch thread's 45 s countdown expiring (a symptom, not a separate fault). Root cause closed: Linux `qcom_snps_hsphy_init()` enables vdda-pll/vdda33/vdda18 FIRST (regulator_bulk_enable is its very first statement) — the 0102 port skipped that step. t18 reuses the SWEET-proven `sweet_rpmh.c` TCS voter (raphael apps_rsc geometry identical: drv-id 2, ACTIVE 2/SLEEP 3/WAKE 3, RSC 0x18220000, cmd-db locator 0x0c3f000c) to vote the three rails before femto (all HPM, mainline raphael DTS wiring): ldoa2@3072mV / ldoa5@880mV / ldoa12@1800mV, plus a `hsphy post-LDO` readback print and a clean abort on any failed vote (failures now end in a stable lock screen instead of the 45 s reboot loop)
+- 🔧 USB (t19 three hardware-level fixes, pending test): the t18 reading was overturned by source verification — the byte-replicated x4 readbacks (REFCLK written 0x2, read back 0x02020202) are a degraded AHB2PHY-bridge signature, not unpowered rails (the 0103 votes were verified correct against raphael's own board dtsi: pm8150 l5/l12/l2); the real QUSB2PHY_PRIM_BCR is at 0x26000 (raphael's gcc table; mainline's 0x12000 does not exist on this silicon — t17/t18 pulsed a no-op); GUSB3PIPECTL.SUSPHY (0xc2c0 bit 17) was never cleared (Qualcomm 9bdbd5286ea5). Console geometry settled (ring fbcon, cleared at boot): every photo is one boot, one probe; only CPU0 wedges at the first ep0 command and the 45 s touch thread escalates it to a warm reset. t19: enable the ahb2phy branch, dual BCR pulse, clear U3 SUSPHY, 20 ms settle, degraded-readback abort (failure = stable lock screen, never the 45 s reboot loop), plus a `SWEET RST:` PON reset classifier (read-only SPMI)
 - 🔧 SPMI: all observer commands (keys/census/battery) now go through one global gate, Linux-style; GPIO census is opt-in (`sweetcensus=1`)
 - ❌ No GPU driver (CPU software rendering, UI is slow), no Wi-Fi/BT/camera/audio/modem yet
 
@@ -179,8 +181,8 @@ adb pull /tmp/sweet-log.bin
 
 | File | Purpose |
 |---|---|
-| `raphael-t18-rpmhldo-clean.img` | **Recommended (r26)**: RPMh LDO votes for the femto HS PHY (ldoa2/ldoa5/ldoa12, Linux order) + post-LDO readback + clean abort on vote failure + all t17 features (femto 15-step, SUSPHY, canary, DWC31 settle, SPMI gate, display scaling, instant off, brightness, charger polling) |
-| `raphael-t18-rpmhldo-debug.img` | Same, with the on-screen console always on (photograph the last lines if it hangs) |
+| `raphael-t19-ahb2phy-bcr-clean.img` | **Recommended (r27)**: fixes the three hardware-level causes of the dead femto register file (AHB2PHY bridge clock 0x6a004, QUSB2PHY_PRIM_BCR 0x26000, GUSB3PIPECTL.SUSPHY) + 20 ms settle + degraded-readback clean abort (failure = stable lock screen, no more 45 s reboots) + `SWEET RST:` previous-reset classifier + all t18 features (RPMh rail votes, post-LDO readback, femto 15-step, SUSPHY, canary, DWC31 settle, SPMI gate, display scaling, instant off, brightness, charger polling) |
+| `raphael-t19-ahb2phy-bcr-debug.img` | Same, with the on-screen console always on (photograph the last lines if it hangs) |
 | `raphael-t7-touchfix-clean.img` | Known-good fallback |
 | `ios16-root.simg.part-00~05` + `CHECKSUMS.txt` | iOS 16.7.16 rootfs (16G HFS+ sparse image; no need to re-flash when kernels update) |
 
@@ -196,7 +198,7 @@ adb pull /tmp/sweet-log.bin
    ```
    Keep these somewhere safe — they can unbrick the phone.
 3. **Flash the rootfs** (~10–20 min): `fastboot -S 512M flash userdata ios16-root.simg`. If Xiaomi fastboot appears frozen afterwards, force-restart into fastboot with **Power + Vol-**; the data is intact.
-4. **Boot**: `fastboot boot raphael-t18-rpmhldo-clean.img`, wait **4–8 minutes** for the lock screen. The body staying warm is normal; do not force-reboot early. Touch works; expect software-rendering lag. **Power the phone fully off before fastboot** after any crash/abnormal boot — PMIC state survives warm reboots.
+4. **Boot**: `fastboot boot raphael-t19-ahb2phy-bcr-clean.img`, wait **4–8 minutes** for the lock screen. The body staying warm is normal; do not force-reboot early. Touch works; expect software-rendering lag. **Power the phone fully off before fastboot** after any crash/abnormal boot — PMIC state survives warm reboots.
 
 ## Troubleshooting
 

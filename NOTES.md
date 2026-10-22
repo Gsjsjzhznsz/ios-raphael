@@ -645,3 +645,71 @@ write failures -> SMMU fault -> system crash on QC targets (commit
 9bdbd5286ea5, tested a year without side effects) - clear it alongside
 GUSB2PHYCFG.SUSPHY. USB2 L1 needs both a BOS LPM-capable descriptor and
 DCFG.LPM_CAP - we have neither, so L1 cannot reach us.
+
+## t18 verdict CORRECTED (source-verified): one boot, one probe, bridge/BCR/SUSPHY
+
+Deep source dive (t19 round) against the CI-equivalent tree overturned three
+earlier readings; every claim below is anchored in code or vendor source:
+
+- Console geometry (pexpert/arm/pe_serial.c, patch 0003): the fbcon is a
+  RING - `fbcon_row = (fbcon_row + 1) % fbcon_rows`, the row after the cursor
+  is kept blank, and fbcon_init CLEARS ALL ROWS on every boot. So a photo
+  never spans two boots: read chronologically from the row after the blank.
+  The t18 photo = ONE probe pass: [rows above the seam: pre-state wrap ->
+  votes -> post-LDO -> femto -> QSCRATCH -> VBUS -> soft reset -> settle ->
+  event buffer -> canary -> ep0 print <- cursor, 2 blank rows]. The t16
+  photo = one probe pass too, and its ep0 print is followed by the FULL boot
+  continuing (DLIL/Skywalk/kminit/UFS mount/KEYS/"TOUCH: starting in 45 s")
+  - only CPU0 wedges inside the first ud_epcmd (the store/dsb never
+  completes; the 1000-iteration loop is never reached). At +45 s the touch
+  thread's bus work on the poisoned config-NoC escalates to the warm reset.
+  The 40/45/50 s "reboot" is a symptom, fully explained.
+- cmd-db parser audited byte-for-byte against Linux drivers/soc/qcom/cmd-db.c
+  (entry_header: id[8]@0, priority[2]@8, addr u32@16, len u16@20, offset
+  u16@22; rsc_hdr@8+16i; data base 144; magic 0x0C0330DB): our rh_lookup is
+  EXACT. The non-linear VRM addresses (ldoa2 0x40f00, ldoa5 0x40b00, ldoa12
+  0x42000) are what the firmware table really holds - suspect (2) from the
+  t18 round is dead.
+- Rail identity CONFIRMED from Xiaomi's own raphael-p-oss: the board file
+  (raphael-sm8150.dtsi -> xiaomi-sm8150-common.dtsi -> sm8150-usb.dtsi)
+  wires usb2_phy0 hsphy@88e2000 compatible "qcom,usb-hsphy-snps-femto" with
+  vdd=pm8150_l5 (880mV), vdda18=pm8150_l12 (1800mV), vdda33=pm8150_l2
+  (3072mV), clocks RPMH_CXO only, reset GCC_QUSB2PHY_PRIM_BCR,
+  param-override 0x83@0x70 + 0x2c@0x74 (raphael board override). The
+  sdmmagpie-usb.dtsi qusb2phy-v2 node (qcom TUNE1/PWR_CTRL1 map, pm6150
+  supplies) is dead code never referenced by the raphael board - an sm7150
+  leftover in the P-branch kernel. Silicon = femto v2, our 0102 register map
+  is correct, and the 0103 votes targeted the right rails at the right
+  voltages/mode.
+- The byte-replicated x4 readbacks (REFCLK written 0x2 -> read 0x02020202,
+  COMMON1 -> 0x3b3b3b3b, constant CTRL2 0x06060606) are the signature of a
+  DEGRADED AHB->PHY bridge access, not an unpowered rail: rails were correct
+  and voted, yet no write ever stuck. raphael's own GCC
+  (raphael-p-oss drivers/clk/qcom/gcc-sdmmagpie.c) HAS
+  gcc_usb_phy_cfg_ahb2phy_clk at 0x6a004 (mainline dropped the branch but
+  keeps GCC_USB_PHY_CFG_AHB2PHY_BCR at 0x6a000); sm7150 gates its QUSB2
+  register file on the same branch. 0104 enables it explicitly.
+- QUSB2PHY_PRIM_BCR offset: mainline gcc-sm8150.c says 0x12000, raphael's
+  own gcc-sdmmagpie.c says 0x26000. Cross-check of both reset tables: every
+  other USB/PCIe/UFS reset matches (USB30_PRIM 0xf000, USB3_PHY_PRIM
+  0x50000, PCIE_0 0x6b000, UFS_PHY 0x77000) - ONLY QUSB2PHY_PRIM differs,
+  i.e. mainline's value is wrong for this silicon. 0x12000 does not exist
+  anywhere in raphael's GCC map: t17/t18 pulsed a no-op and the PHY never
+  hardware-reset. 0104 pulses 0x26000 first (authoritative), 0x12000 second
+  (proven harmless).
+- GUSB3PIPECTL(0) = 0xc2c0, SUSPHY = bit 17 (Linux dwc3 core.h). t16 wedged
+  on the first DEPCMD write with NO femto code at all - consistent with the
+  never-cleared U3 SUSPHY (Qualcomm 9bdbd5286ea5: leftover set bit ->
+  register write failures -> system crash; mainline wires dis_u3_susphy_
+  quirk on sm8150). 0104 clears it alongside GUSB2PHYCFG.SUSPHY.
+- t18 canary read 0x00000000 (reads complete through the degraded path);
+  t16 clk master CBCR 0x00004221 vs others 0x00000001; GEVNTADR carried
+  ABL's leftover 0xfdbf9000. None change the verdict.
+- 0104 protection: +20 ms settle after the femto sequence; a byte-replicated
+  or zero COMMON1/REFCLK readback aborts cleanly BEFORE ep0 (failure =
+  stable lock screen + photo; the 45 s reboot loop is now mechanically
+  impossible). 0104 forensics: "SWEET RST:" PM8150 PON classifier via SPMI
+  sid0 periph 0x8 (subtype 0x05, PON_REASON1 0xC0, WARM_RESET_REASON1 0xC2,
+  POFF_REASON1 0xC5, OFF_REASON 0xC7, FAULT_REASON1/2 0xC8/0xC9,
+  S3_RESET_REASON 0xCA); sweet_spmi.c's allowlist was generalized for
+  read-only (sid0, periph 0x8) alongside the battery (sid2) lanes.

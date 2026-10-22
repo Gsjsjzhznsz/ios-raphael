@@ -514,3 +514,25 @@ Stage Summary:
 - t18 破案：表面"50s 重启"之下，USB 链路仍死在 t16 同一点（第一条 ep0 命令写楔死）；0103 投票完成了 TCS 握手但 PHY 寄存器堆仍半崩坏（字节复制读回），轨没有真正上稳
 - 双路深度检索产出三条硬资产：PON 复位分类矩阵（0104 取证）、GUSB3PIPECTL.SUSPHY 嫌疑位、Android 主机 L2 息屏挂起时序（USB 跑通后的下一防线）
 - t19 = 取证 + 自保 + 裁决三合一：复位原因打印、垃圾读中止、SPMI 轨实测；sweet-log.bin 是当前最缺的一块拼图
+
+---
+Task ID: 24
+Agent: Super Z (main agent)
+Task: 用户指令"深度搜索源码，深度研究"+ t18 死亡屏幕照片 → 源码级深挖 + 官方源裁决 → t19/0104 三项硬件级修复
+
+Work Log:
+- 会话恢复: 用户提供的分享页(agent-browser 渲染抓取全文) + GitHub token → 找回 Gsjsjzhznsz/ios-raphael 仓库并克隆; 本地重建规范基线树(xnu-8796.141.3 + staging×3 + 0001-0103, scripts/rebuild-baseline.sh)
+- VLM 五带逐行转录 IMG_20261022_010547.jpg(t18 死亡屏幕) + 逐行对照 sweet_usb.c 打印序: 照片 = 同一次启动、同一次 probe 的完整环绕一圈(50行×67列), 光标冻在 ep0 print, 其后两行空白; Task 23 的"双启动残留"判读被推翻
+- 控制台几何定案(读了 pe_serial.c fbcon 实现, 0003 补丁以来未变): 环绕式 + 行后留空 + 每次开机清屏 → 照片内容永远来自单次启动
+- t16_screen.jpg 重转录: ep0 print 后系统继续跑完 DLIL/Skywalk/UFS/KEYS/TOUCH-45s → 只有 CPU0 楔死在第一条 ud_epcmd 写(store/dsb 永不完成); 45 秒触摸线程撞毒化 NoC → RPM/TZ 热复位 = 40-50s"重启"完整因果链闭合
+- cmd-db 解析器审计(对照 Linux cmd-db.c 逐字节): rh_lookup 完全正确, 非线性 VRM 地址是固件真值 → "投错轨"嫌疑排除
+- 官方源裁决链: realme X2 Pro(sm8150) vendor USB dtsi + Xiaomi raphael-p-oss 板级链(raphael-sm8150.dtsi → xiaomi-sm8150-common → sm8150-usb.dtsi) → 硅片 = femto v2, 供电轨 = pm8150_l5/l12/l2@880/1800/3072(0103 投票对象全对), sdmmagpie-usb.dtsi 的 qusb2phy-v2 是死代码; 主线 femto 驱动与 vendor 驱动逐行一致, 0102 移植无误
+- 真死因×3 定位: ①字节复制×4 读值(REFCLK 写 0x2 读回 0x02020202) = AHB2PHY 桥降级特征, raphael 官方 GCC 有 gcc_usb_phy_cfg_ahb2phy_clk@0x6a004 ②QUSB2PHY_PRIM_BCR 真偏移 0x26000(raphael 官方) vs 主线错值 0x12000, 两表其余复位全一致唯此项不同, t17/t18 一直在脉冲不存在的寄存器 ③GUSB3PIPECTL.SUSPHY(0xc2c0 bit17)从未清除(Qualcomm 9bdbd5286ea5, t16 无 femto 也楔死吻合)
+- 0104 补丁(apply_0104_usb_ahb2phy_bcr.py, byte 锚定×8 全过 + 往返校验干净): ahb2phy 桥使能 + 双 BCR 脉冲 + GUSB3PIPECTL 清除 + 20ms settle + 降级中止(终结 45s 重启循环) + SWEET RST: PON 复位分类器(SPMI 只读, sid0 periph 0x8)
+- 提交 a312db4 推送, CI run 39701306108 构建中; t19-materials 从 t17 上传镜像提取(shim/DTB/ADT/cmdline, shim 自 r25 未变), scripts/t19_package.py 后台轮询打包+六重校验
+- 文档: FLASH-T19.md(判读树) / NOTES.md 追加 t18 verdict CORRECTED 全证据链
+
+Stage Summary:
+- t19 修复集: 三项硬件死因(桥时钟/BCR 偏移/U3 SUSPHY) + 防护(降级中止) + 取证(PON 分类器); 任何失败模式从"45 秒重启循环"变为"稳定锁屏+照片"
+- 判读树决胜行: ahb2phy CBCR (on) → pre-state 非重复字节 → hsphy up (femto) 回读正常 → ep0 TRB armed → running → 枚举 + ping 192.168.7.2
+- 证据资产: t19-bands 五带转录 / t16-bands 重转录 / ref-raphael-{gcc,usb,board,sm8150-usb} 官方源存档 / ref-vendor-{gcc,femto,usb} / ref-femto-v2.c 主线驱动
