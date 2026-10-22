@@ -1,0 +1,24 @@
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 3891155..f80c531 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -81,6 +81,7 @@ const char * gIOKernelConfigTables =
+     "     'IOClass'         = SweetBattery;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetBattery;"
++    "     'name'           = AppleSmartBattery;"
+     "   },"
+ #endif
+     "   {"
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 988cfc5..12bf374 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -624,6 +624,7 @@ SweetBattery::start(IOService *provider)
+ 			IOLog("SWEET BATTERY: timer unavailable; static fallback\n");
+ 		}
+ 	}
++	IOLog("SWEET BATTERY: registering as AppleSmartBattery\n");
+ 	registerService();
+ 	return true;
+ }
