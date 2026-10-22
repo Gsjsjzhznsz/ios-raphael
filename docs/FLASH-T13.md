@@ -1,4 +1,9 @@
-# t13（r21）刷写与判读 · fg-gen4 硬件电量计（真 SOC / 电压 / 电流）+ SMB5 充电语义
+# t13（r29）刷写与判读 · fg-gen4 硬件电量计（真 SOC / 电压 / 电流）+ SMB5 充电语义 · v2 头重建版
+
+> **r29 重建说明（2026-10-22）**：原版 t13（r21）资产失传——被 v1 头重建版误替换导致黑屏。
+> - **内核**：由回退树 a7a925e（补丁 0001-0096，与原版 t13 完全同一补丁集）经 CI run 39730368579 重新构建；runner 工具链漂移致字节级哈希与原版不同（`bd6ad8be…`，已对 CI manifest 清单验证），内容判定以标记集校验为准——t12 身份标记（GT9886 / cfg send / DWC3 GSNPSID）+ 0096 fg-gen4 标记三项全部在场、已回退的 0097-0104（t14~t19 轮）标记 17 项全部缺席，双镜像六重校验全过。
+> - **打包**：字节级验证过的 v2 工具链（`scripts/t13_prove_v2_toolchain.py` 对黄金 t12 往返复现，除 20B id 记账字段外逐字节一致）——**v1 头 = 黑屏**（三次事故同源：本机 ABL 只接受 v2 头 + DTB 独立段 @0x1f00000）。
+> - 稳定版仍为 **r28/t12**（Latest 不变）；本版为当前测试轮。
 
 ## t12 实测结果（本版的出发点）
 
@@ -70,7 +75,7 @@ SWEET TOUCH: cfg send sensor1 784B err=0 flip=0
 
 ### C. 启动层
 
-8 核不变（`8/8 CPUs initialized`）；万一卡 bootstrap（理论不可能：本轮只动了电池路径）→ 强制重启回 t7 回报。
+8 核不变（`8/8 CPUs initialized`）；万一卡 bootstrap（理论不可能：本轮只动了电池路径）→ 强制重启回 **t12（r28）** 回报。
 
 ### D. 日志取证（不变）
 
@@ -82,7 +87,7 @@ adb shell dd if=/dev/block/by-name/userdata of=/tmp/sweet-full.bin bs=4096 skip=
 
 ### E. 回退
 
-`fastboot boot` 回 **t7**（已知可用：8 核 + 按键 + 触摸链路回退点）。
+`fastboot boot` 回 **t12 / r28 稳定版**（已知可用：8 核 + 触摸闭环 + 电池探针 + v2 头）。
 
 ## 下一步研究已在案（见仓库 NOTES.md 新增章节）
 
@@ -95,7 +100,7 @@ adb shell dd if=/dev/block/by-name/userdata of=/tmp/sweet-full.bin bs=4096 skip=
 
 | 文件 | SHA256 |
 |---|---|
-| `raphael-t13-fggen4-clean.img` | `3d31006ca3c318779e5a0c21e4d6dee2ed65c7a1125b50acc26c2c8f8aa8c23f` |
-| `raphael-t13-fggen4-debug.img` | `8a5fe04f6dad86836cb589a2ba0e3c4d75b90aad2550ee69c8cca1ce63a63085` |
+| `raphael-t13-fggen4-clean.img` | `82c71576bb58b9279e71ddcc03335a1e66a858679abb4d3abac9d65fe88044e4` |
+| `raphael-t13-fggen4-debug.img` | `4f1f5f65cd96463030729ffdba8787ad8c880dd4aff5a4641bd8fa0c1430770d` |
 
-内核：`c094d9ed1e1a9f6c4e4ab8b628547497ef8cb3a244d2d603d81d6cd8e1085d72`（0094-0096，CI run 39596471069）；ADT：t8 系 8 核（f50510e0…，12588B）。
+内核：`bd6ad8bee6ea239b8d703b89c98ba15eedae9ab8080ae3502a525b02b3354eed`（补丁 0001-0096，CI run 39730368579；原版 r21 内核为 `c094d9ed…`，CI run 39596471069——runner 工具链漂移，功能同一补丁集，以标记集校验判定）；ADT：t8 系 8 核（f50510e0…，12588B）。

@@ -359,3 +359,53 @@ Stage Summary:
 - 稳定发行版 = r28/t12：8 核 + GT9886 触摸闭环 + 电池探针 + v2 头正确打包；clean 与当年实测可用文件逐字节一致
 - v1 头黑屏根因已归档（t13 重建失败、t19 黑屏、乃至 t8 时代"v1 不被接受"三次事故同源）
 - 后续若重启 USB 线：先用 v2 工具链（repack-boot-v2）重打包再谈内核功能
+
+---
+Task ID: 28
+Agent: Z.ai (main)
+Task: 用户指令"t12 不要加 USB 了" —— 冻结 t12 稳定线，禁止任何 USB 添加
+
+Work Log:
+- 核实 r28 双资产（clean/debug）cmdline 均 sweetusb=0：USB 探测/gadget 在 boot-arg 层面彻底关闭；内核中的基线 USB 代码（0072/0073/0087，0085 轮产物）保持休眠，与实测可用的原 t12 行为逐字节一致
+- 文档扫描：FLASH-T12.md 仅废弃说明 + 电池探针 usb= 遥测字段（PMIC 充电类型，非 USB gadget）；README 无任何 USB 计划，USB 行已标 ⛔ 已废弃
+- 决策记录：t12 稳定线（r28 及后续 t12 系资产）**永久不做 USB**——不启用 sweetusb、不打包 v2 USB 镜像实验、不在稳定资产上做任何 USB 变体；仓库树 0001-0096（含休眠 USB 基线补丁）保持不动（与稳定内核血缘一致，删除反而制造分叉）
+
+Stage Summary:
+- t12 稳定线冻结于无 USB 状态；任何未来 USB 尝试（如有）必须走独立实验分支，绝不触碰 r28 稳定资产
+
+---
+Task ID: 29
+Agent: Z.ai (main)
+Task: 用户指令"好了开始出t13" —— 从回退树（a7a925e，补丁 0001-0096）重建失传的 t13（fg-gen4 硬件电量计）镜像，v2 工具链正确打包
+
+Work Log:
+- 环境再次重置（GH_TOKEN 丢失、.git/config token 被 REDACTED）；仓库树仍在 e20ac84（= a7a925e 回退树 + 用户 t12 上传 + r28 文档），xnu/patches 99 文件（0001-0096 完整，0097-0104 已随回退移除）。
+- 确认 CI 已替我们建好内核：xnu run #36（run id 39730368579，a7a925e，2026-10-22 06m16s success）产物 xnu-kernel（artifact id 12404184990，60MB，未过期，约 10-29 失效）；r21（原 t13）release 已删除只剩 tag，原版镜像/内核在公网不可恢复。
+- 根因考古（t19_package.py 源码实锤）：v1 黑屏事故 = package-raphael.py 用 --header_version 1 且把 DTB 拼进 kernel 段；正确 v2 链 = mkpayload.py + mkbootimg.py --header_version 2（kernel=shim、ramdisk=payload、DTB 独立段 @0x1f00000、文件在 DTB 末端截断）。
+- v2 工具链字节级证明（scripts/t13_prove_v2_toolchain.py）：从黄金 t12（3725736f…）抽取 shim/payload/DTB → mkbootimg（--base 0 --pagesize 4096 --cmdline 'console=null' --os_version 11.0.0 --os_patch_level 2021-10）+ 截断规则 → 复现 t12 除 20B id[] 记账字段（原管线对重打包前输入计算、ABL/shim 均不读，README-repack 有档）外逐字节一致；材料与 Task 27 的 t12-materials 三重交叉全等（shim 9fbe8fb8 / DTB 2a1ec87b / ADT f50510e0=12588B 8 核）。
+- 标记判别集审计（scripts/t13_marker_audit.py，对照 t12 内核区(0095) 与本地 t19 内核(0104)）：'SWEET FB: AppleCLCD'/'QSCRATCH HS_PHY_CTRL'/'SWEET RPMH:'/'VBUS override'/'ACTIVE vote complete' 在 t12 休眠基线里早已存在，不是 t14+ 判别子；已剔除。终版：PRESENT = t12 身份（GT9886/cfg send/DWC3 GSNPSID）+ 0096 fg-gen4（PM8150B fg-gen4 / probe sys= / msoc=）三项；ABSENT = 0097-0104 每补丁至少一串共 17 项。
+- 生产线就绪（scripts/t13_build.py）：mkpayload(t13 内核, t12 ADT, t12 cmdline 逐字) → mkbootimg + 截断 → debug=1 字节（sweetfb_noconsole 1→0）；六重校验（v2 头律/shim+DTB 逐字节/payload 魔数+cmdline/ADT 逐字节+内存几何/标记在场+缺席/sha256）。负向冒烟（t19 内核喂入）：机械链全过、标记门以全 17 项泄漏正确拒绝 —— 管线双向验证。
+- 阻塞项：GH_TOKEN（拉 CI artifact、push、发 r29 均需）。fetch/release 脚本已备好（scripts/t13_fetch_kernel.py / scripts/t13_release.py，后者 make_latest=false 保 r28 稳定位）。
+
+Stage Summary:
+- t13 重建万事俱备：内核在 CI run 39730368579（未过期）、v2 打包链已字节级证明、构建/校验/发布脚本三件套就绪、t12 材料交叉验证一致
+- 一旦 GH_TOKEN 到位：fetch → build（六重校验）→ 文档（FLASH-T13/README/WORKLOG）→ push → r29（make_latest=false）→ download/ 刷新
+- 教训归档：mkpayload 非幂等（chained fixups 原地改写、payload 内核区不可回喂）；t14+ 判别标记必须双内核对照审计后使用
+
+---
+Task ID: 30
+Agent: Z.ai (main)
+Task: 用户送达 GH_TOKEN（"以后要保留凭据"）→ t13 重建流水线全程执行：fetch → build → 文档 → push → r29 发布 → download/ 刷新
+
+Work Log:
+- 凭据持久化：GH_TOKEN 写入 .env（.gitignore 补 .env 防泄漏）+ work/ios-raphael/.git/config remote URL；token 三重验证通过（api /user → Gsjsjzhznsz；repo 访问 200；fetch 后远程 main = 本地 = e20ac84 零漂移）。
+- fetch（run 39730368579 / artifact 12404184990，60MB zip）：内核选型事故与修复——原"取最大 kernel.*"策略选中 .link/ 下 134MB ar 归档（kernel.development.raphael.a）而非顶层 17.2MB 真 Mach-O，t13_build 魔数断言正确拦截；t13_fetch_kernel.py 已改为 SHA256SUMS manifest 优先 + Mach-O 魔数（cf fa ed fe）校验 + 排除 .link/.dSYM/.a。内核 = kernel.development.raphael 17,206,304B，sha256 bd6ad8be…（与 CI manifest 全等；与原版 r21 内核 c094d9ed… 不同 = runner 工具链漂移，按预案以标记集判定，功能同一补丁集 0001-0096）。
+- build（t13_build.py）：六重校验全过（v2 头律 / shim+DTB 逐字节=t12 / payload 魔数+cmdline / ADT 逐字节+内存几何 / 标记 t12 身份+0096 fg-gen4 全在场、0097-0104 全 17 项缺席 / sha256）；双镜像均 17,326,191B；debug 恰 1 字节 @0x33172（sweetfb_noconsole 1→0，与 t12 debug 同位）。clean = 82c71576…，debug = 4f1f5f65…。
+- 文档：FLASH-T13.md 升级为 r29 版（重建说明块 + 原版判读树全保留；回退点 t7 → t12/r28；内核哈希行更新）；README 双语五处（状态表电池行 ×2、下载表 t13 两行 ×2、哈希块 t13-orig/r29 三行）；WORKLOG 补档 Task 28/29/30。
+- 发布：raphael-touch-r29（make_latest=false，r28/t12 保持 Latest）；4 资产（clean/debug/FLASH-T13.md/T13-SHA256SUMS.txt）api_size + 公网回读 sha256 双通道全等（Task 20 纪律）。
+- download/ 刷新为 t13 四件套（t12 四件套移除；t12 仍可从 r28 release 获取）。
+
+Stage Summary:
+- t13 以 r29 重回测试轮：功能与失传的原版完全同一补丁集（0001-0096），打包首次用字节级验证的 v2 链
+- 凭据新常态：GH_TOKEN 常驻 .env + git config（.env 已进 .gitignore），后续会话免再索要
+- 教训：CI artifact 内可能混有链接中间产物（.link/*.a 134MB > 真 Mach-O 17MB），选核必须走 manifest + 魔数双验证，"取最大"不可靠
