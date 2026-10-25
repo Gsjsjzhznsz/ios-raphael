@@ -1,5 +1,11 @@
 # Worklog
 
+> **[项目状态公告 · 2026-10-25]** 本项目（**t 系列 / ios-raphael**）**已暂停更新**，最终轮次定格于 t23 / 发行版 r33。
+>
+> 后续开发已迁移至新项目：**r 系列 — [hackios-xnu-kernel](https://github.com/Gsjsjzhznsz/hackios-xnu-kernel)**（GPU bring-up r11–r28d、a640 zap 认证链、Hyp EL2 / TZ secboot 分析等均在新仓库继续）。
+>
+> 本 worklog 自 Task 35 公告起封存，仅作历史记录查阅，不再追加新条目。
+
 ---
 Task ID: 1
 Agent: Super Z (main agent)
@@ -493,3 +499,17 @@ Stage Summary:
 **工程**：sweet_touch.c 终态重建 = 0060(创建)→0062→0063→0083→0086→0088→0089→0091→0093→0094 十补丁链回放（1162 行零 FAIL，6 锚点全中；幻影段尾空行/\ No newline 元数据解析修复）；0102 双向验证（git apply --check --reverse + patch -p1 应用结果与手改版逐字节一致）；t23 构建自检（t22 字节级复现）。
 
 **下一轮判决点**：①`GT9886 tryN` 任一档 PID 变对 + 实机触摸恢复（全胜）；②三败（固件升级路径：OrangeFox 从 MIUI vendor 提取 goodix 固件）；③亮度/充电回归确认（本轮零改动）。
+
+---
+Task ID: 35
+Agent: Z.ai (main)
+Task: 项目状态公告 —— t 系列暂停更新，开发迁移至 r 系列 hackios-xnu-kernel
+
+Work Log:
+- 2026-10-25 应项目负责人指令：t 系列（本仓库 ios-raphael）正式**暂停更新**；最终测试轮 t23、发行版 r33、最终补丁 0102（触摸冷启动重试阶梯）。
+- 后续全部开发与测试迁至新项目 **r 系列 hackios-xnu-kernel**（https://github.com/Gsjsjzhznsz/hackios-xnu-kernel）：GPU bring-up（r11–r28d 轮次）、a640 zap 认证链（PAS_INIT_IMAGE 0x42000201 → -0x300045 拒绝链分析）、Hyp EL2 / TZ secboot 解码等均在该项目继续推进。
+- 本仓库冻结范围：t7–t23 全部补丁链（0001–0102）、发行版资产（r15 / r27 / r33 等）、FLASH-Tx 判读树文档与本 worklog 全部历史，均完整保留，供新项目随时引用。
+
+Stage Summary:
+- ios-raphael（t 系列）：状态 = **已暂停更新**（2026-10-25 起），历史封存，不再追加条目。
+- hackios-xnu-kernel（r 系列）：**当前活跃项目**，承接全部后续开发（GPU/TrustZone 方向）。
