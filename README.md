@@ -1,5 +1,7 @@
 # ios-raphael — iOS 16 on Redmi K20 Pro (raphael)
 
+新项目为(New Project)https://github.com/Gsjsjzhznsz/hackios-xnu-kernel
+
 [English version below](#english)
 
 把 Apple 的 XNU 内核 + iOS 16.7.16 用户态跑在红米 K20 Pro（代号 **raphael**，高通 SM8150 / 骁龙 855）上的移植实验。基于上游 [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)（已在 sweet / Redmi Note 10 Pro 点亮 iOS 主屏），本项目为 raphael 做全套硬件适配：触摸、电池、显示、USB、八核。
