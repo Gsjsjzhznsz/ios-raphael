@@ -1,6 +1,6 @@
 # ios-raphael — iOS 16 on Redmi K20 Pro (raphael)
 
-新项目为(New Project)https://github.com/Gsjsjzhznsz/hackios-xnu-kernel
+新项目为(New Project)(https://github.com/Gsjsjzhznsz/UniXNU-raphael-jacky-archive)
 
 [English version below](#english)
 
